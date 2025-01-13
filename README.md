@@ -1,1 +1,1 @@
-# A very basic graph store
+# A very basic kv store
