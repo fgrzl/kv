@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	kv "github.com/fgrzl/kv"
-	pants "github.com/fgrzl/kv/pebble"
+	"github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pebble"
 	"github.com/fgrzl/kv/sqlite"
 	"github.com/google/uuid"
 )
@@ -28,7 +28,7 @@ func getKVDB(t *testing.T, dbType string) kv.KV {
 		// Use a temporary file for SQLite DB
 		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.sqlite", uuid.NewString()))
 		// Initialize SQLite implementation
-		db, err = sqlite.NewSqliteKV(dbPath)
+		db, err = sqlite.NewSQLiteStore(dbPath)
 		if err != nil {
 			t.Fatalf("Failed to initialize SQLite DB: %v", err)
 		}
@@ -36,7 +36,7 @@ func getKVDB(t *testing.T, dbType string) kv.KV {
 		// Use a temporary directory for Pebble DB
 		dbPath = filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
 		// Initialize Pebble implementation
-		db, err = pants.NewPebbleStore(dbPath)
+		db, err = pebble.NewPebbleStore(dbPath)
 		if err != nil {
 			t.Fatalf("Failed to initialize Pebble DB: %v", err)
 		}

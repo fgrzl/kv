@@ -9,6 +9,7 @@ import (
 )
 
 type store struct {
+	kv.KV
 	db *sql.DB
 }
 

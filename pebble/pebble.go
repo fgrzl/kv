@@ -8,6 +8,7 @@ import (
 )
 
 type store struct {
+	kv.KV
 	db *pebble.DB
 }
 
