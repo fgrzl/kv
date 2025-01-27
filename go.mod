@@ -3,7 +3,7 @@ module github.com/fgrzl/kv
 go 1.23.4
 
 require (
-	github.com/cockroachdb/pebble v1.1.3
+	github.com/cockroachdb/pebble v1.1.4
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.24
 )
