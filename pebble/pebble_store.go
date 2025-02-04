@@ -226,6 +226,34 @@ func (s *store) PutBatch(items []*kv.Item) error {
 	return batch.Commit(pebble.Sync)
 }
 
+func (s *store) PutChunks(items enumerators.Enumerator[*kv.Item], chunkSize int) error {
+	chunks := enumerators.ChunkByCount(items, chunkSize)
+	for chunks.MoveNext() {
+		chunk, err := chunks.Current()
+		if err != nil {
+			return err
+		}
+
+		batch := s.db.NewBatch()
+		defer batch.Close()
+
+		for chunk.MoveNext() {
+			item, err := chunk.Current()
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
+				return err
+			}
+		}
+
+		if err := batch.Commit(pebble.Sync); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *store) Remove(key kv.EncodedKey) error {
 	return s.db.Delete([]byte(key), pebble.Sync)
 }

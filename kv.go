@@ -18,6 +18,7 @@ type KV interface {
 	// Write
 	Put(item *Item) error
 	PutBatch(items []*Item) error
+	PutChunks(items enumerators.Enumerator[*Item], chunkSize int) error
 
 	// Remove
 	Remove(key EncodedKey) error
