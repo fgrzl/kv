@@ -1,11 +1,13 @@
 module github.com/fgrzl/kv
 
-go 1.23.4
+go 1.23.5
 
 require (
-	github.com/cockroachdb/pebble v1.1.3
+	github.com/cockroachdb/pebble v1.1.4
+	github.com/fgrzl/enumerators v0.0.0-20250203203525-12ec03c30a32
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.24
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
@@ -15,7 +17,7 @@ require (
 	github.com/cockroachdb/errors v1.11.3 // indirect
 	github.com/cockroachdb/fifo v0.0.0-20240816210425-c5d0cb0b6fc0 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20241215232642-bb51bb14a506 // indirect
-	github.com/cockroachdb/redact v1.1.5 // indirect
+	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/getsentry/sentry-go v0.31.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -27,12 +29,18 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.20.5 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
-	github.com/prometheus/common v0.61.0 // indirect
+	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
-	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
+	golang.org/x/exp v0.0.0-20250128182459-e0ece0dbea4c // indirect
 	golang.org/x/sys v0.29.0 // indirect
-	google.golang.org/protobuf v1.36.2 // indirect
+	google.golang.org/protobuf v1.36.4 // indirect
 )
 
-require golang.org/x/text v0.21.0 // indirect
+require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/fgrzl/streams v0.0.10 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
