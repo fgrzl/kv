@@ -35,14 +35,14 @@ func setup(t *testing.T) kv.KV {
 // -----------------
 // Test Dataset
 // -----------------
-var TestDataset = []*kv.Item{
-	{Key: kv.EncodedKey("a"), Value: []byte("A")},
-	{Key: kv.EncodedKey("b"), Value: []byte("B")},
-	{Key: kv.EncodedKey("c"), Value: []byte("C")},
-	{Key: kv.EncodedKey("d"), Value: []byte("D")},
-	{Key: kv.EncodedKey("e"), Value: []byte("E")},
-	{Key: kv.EncodedKey("f"), Value: []byte("F")},
-	{Key: kv.EncodedKey("g"), Value: []byte("G")},
+var TestDataset = []*kv.BatchItem{
+	{Op: kv.Put, Key: kv.EncodedKey("a"), Value: []byte("A")},
+	{Op: kv.Put, Key: kv.EncodedKey("b"), Value: []byte("B")},
+	{Op: kv.Put, Key: kv.EncodedKey("c"), Value: []byte("C")},
+	{Op: kv.Put, Key: kv.EncodedKey("d"), Value: []byte("D")},
+	{Op: kv.Put, Key: kv.EncodedKey("e"), Value: []byte("E")},
+	{Op: kv.Put, Key: kv.EncodedKey("f"), Value: []byte("F")},
+	{Op: kv.Put, Key: kv.EncodedKey("g"), Value: []byte("G")},
 }
 
 // -----------------
@@ -71,13 +71,13 @@ func TestPutBatch(t *testing.T) {
 	t.Run("Should store multiple items", func(t *testing.T) {
 		// Arrange
 		db := setup(t)
-		items := []*kv.Item{
-			{Key: kv.EncodedKey("key1"), Value: []byte("value1")},
-			{Key: kv.EncodedKey("key2"), Value: []byte("value2")},
+		items := []*kv.BatchItem{
+			{Op: kv.Put, Key: kv.EncodedKey("key1"), Value: []byte("value1")},
+			{Op: kv.Put, Key: kv.EncodedKey("key2"), Value: []byte("value2")},
 		}
 
 		// Act
-		err := db.PutBatch(items)
+		err := db.Batch(items)
 
 		// Assert
 		result1, _ := db.Get(items[0].Key)
@@ -110,7 +110,7 @@ func TestRemove(t *testing.T) {
 func TestQuery_ExactMatch(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.PutBatch(TestDataset)
+	err := db.Batch(TestDataset)
 	require.NoError(t, err)
 
 	query := &kv.QueryArgs{
@@ -130,7 +130,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 func TestQuery_GreaterThan(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.PutBatch(TestDataset)
+	err := db.Batch(TestDataset)
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{
@@ -150,7 +150,7 @@ func TestQuery_GreaterThan(t *testing.T) {
 func TestQuery_LessThan(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.PutBatch(TestDataset)
+	err := db.Batch(TestDataset)
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{
@@ -170,7 +170,7 @@ func TestQuery_LessThan(t *testing.T) {
 func TestQuery_Between(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.PutBatch(TestDataset)
+	err := db.Batch(TestDataset)
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{

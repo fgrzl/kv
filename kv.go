@@ -17,13 +17,14 @@ type KV interface {
 
 	// Write
 	Put(item *Item) error
-	PutBatch(items []*Item) error
-	PutChunks(items enumerators.Enumerator[*Item], chunkSize int) error
 
 	// Remove
 	Remove(key EncodedKey) error
 	RemoveRange(startKey, endKey EncodedKey) error
-	RemoveBatch(keys ...EncodedKey) error
+
+	// Batch
+	Batch(items []*BatchItem) error
+	BatchChunks(items enumerators.Enumerator[*BatchItem], chunkSize int) error
 
 	// Close
 	Close() error
@@ -34,6 +35,20 @@ type Item struct {
 	Key   EncodedKey
 	Value []byte
 }
+
+type BatchItem struct {
+	Op    Operation
+	Key   EncodedKey
+	Value []byte
+}
+
+type Operation int
+
+const (
+	NoOp Operation = iota
+	Put
+	Remove
+)
 
 // QueryArgs defines the parameters for querying items.
 type QueryArgs struct {

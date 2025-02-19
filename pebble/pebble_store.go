@@ -96,12 +96,6 @@ func (s *store) Query(queryArgs *kv.QueryArgs, sortOrder kv.SortDirection) ([]*k
 	return slice, nil
 }
 
-func reverseItems(items []*kv.Item) {
-	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
-		items[i], items[j] = items[j], items[i]
-	}
-}
-
 func (s *store) Enumerate(queryArgs *kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 	var counter int
 
@@ -125,26 +119,31 @@ func (s *store) Enumerate(queryArgs *kv.QueryArgs) enumerators.Enumerator[*kv.It
 	options := &pebble.IterOptions{}
 
 	switch queryArgs.Operator {
+
 	case kv.GreaterThan:
 		options.LowerBound = queryArgs.StartKey
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.StartKey) > 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekGE(queryArgs.StartKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Next() }
+
 	case kv.GreaterThanOrEqual:
 		options.LowerBound = queryArgs.StartKey
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.StartKey) >= 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekGE(queryArgs.StartKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Next() }
+
 	case kv.LessThan:
 		options.UpperBound = queryArgs.EndKey
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.EndKey) < 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekLT(queryArgs.EndKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Prev() }
+
 	case kv.LessThanOrEqual:
 		options.UpperBound = queryArgs.EndKey
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.EndKey) <= 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekLT(queryArgs.EndKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Prev() }
+
 	case kv.Between:
 		options.LowerBound = queryArgs.StartKey
 		options.UpperBound = queryArgs.EndKey
@@ -153,11 +152,13 @@ func (s *store) Enumerate(queryArgs *kv.QueryArgs) enumerators.Enumerator[*kv.It
 		}
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekGE(queryArgs.StartKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Next() }
+
 	case kv.StartsWith:
 		options.LowerBound = queryArgs.StartKey
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.HasPrefix(key, queryArgs.StartKey) }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekGE(queryArgs.StartKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Next() }
+
 	default:
 		satisfiesOperator = func(_ kv.EncodedKey) bool { return true }
 		seek = func(iter *pebble.Iterator) bool { return iter.First() }
@@ -213,47 +214,6 @@ func (s *store) Put(item *kv.Item) error {
 	return s.db.Set([]byte(item.Key), item.Value, pebble.Sync)
 }
 
-func (s *store) PutBatch(items []*kv.Item) error {
-	batch := s.db.NewBatch()
-	defer batch.Close()
-
-	for _, item := range items {
-		if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
-			return err
-		}
-	}
-
-	return batch.Commit(pebble.Sync)
-}
-
-func (s *store) PutChunks(items enumerators.Enumerator[*kv.Item], chunkSize int) error {
-	chunks := enumerators.ChunkByCount(items, chunkSize)
-	for chunks.MoveNext() {
-		chunk, err := chunks.Current()
-		if err != nil {
-			return err
-		}
-
-		batch := s.db.NewBatch()
-		defer batch.Close()
-
-		for chunk.MoveNext() {
-			item, err := chunk.Current()
-			if err != nil {
-				return err
-			}
-			if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
-				return err
-			}
-		}
-
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *store) Remove(key kv.EncodedKey) error {
 	return s.db.Delete([]byte(key), pebble.Sync)
 }
@@ -281,10 +241,67 @@ func (s *store) RemoveRange(start, end kv.EncodedKey) error {
 	return batch.Commit(pebble.Sync)
 }
 
+func (s *store) Batch(items []*kv.BatchItem) error {
+
+	batch := s.db.NewBatch()
+	defer batch.Close()
+
+	for _, item := range items {
+		switch item.Op {
+		case kv.NoOp:
+			continue
+		case kv.Put:
+			if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
+				return err
+			}
+		case kv.Remove:
+			if err := batch.Delete([]byte(item.Key), nil); err != nil {
+				return err
+			}
+		}
+	}
+
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
+	chunks := enumerators.ChunkByCount(items, chunkSize)
+	for chunks.MoveNext() {
+		chunk, err := chunks.Current()
+		if err != nil {
+			return err
+		}
+
+		batch := s.db.NewBatch()
+		defer batch.Close()
+
+		for chunk.MoveNext() {
+			item, err := chunk.Current()
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
+				return err
+			}
+		}
+
+		if err := batch.Commit(pebble.Sync); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *store) Close() error {
 	var closeErr error
 	s.disposed.Do(func() {
 		closeErr = s.db.Close()
 	})
 	return closeErr
+}
+
+func reverseItems(items []*kv.Item) {
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
 }
