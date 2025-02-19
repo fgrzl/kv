@@ -280,8 +280,17 @@ func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSi
 			if err != nil {
 				return err
 			}
-			if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
-				return err
+			switch item.Op {
+			case kv.NoOp:
+				continue
+			case kv.Put:
+				if err := batch.Set([]byte(item.Key), item.Value, nil); err != nil {
+					return err
+				}
+			case kv.Remove:
+				if err := batch.Delete([]byte(item.Key), nil); err != nil {
+					return err
+				}
 			}
 		}
 
