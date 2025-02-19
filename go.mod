@@ -1,6 +1,6 @@
 module github.com/fgrzl/kv
 
-go 1.23.5
+go 1.23.0
 
 require (
 	github.com/cockroachdb/pebble v1.1.4
