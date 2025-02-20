@@ -6,7 +6,7 @@ toolchain go1.24.0
 
 require (
 	github.com/cockroachdb/pebble v1.1.4
-	github.com/fgrzl/enumerators v0.0.0-20250213152443-372938838ca4
+	github.com/fgrzl/enumerators v0.0.0-20250220142310-202d6063f571
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.10.0
 )
