@@ -32,6 +32,22 @@ func EncodeKey(prefix string, key ...any) (EncodedKey, error) {
 	return buf.Bytes(), nil
 }
 
+func AppendKey(encodedKey EncodedKey, key ...any) (EncodedKey, error) {
+	var buf bytes.Buffer
+
+	buf.Write(encodedKey)
+	buf.WriteByte(0) // Null byte separator ensures prefix remains distinct
+	for _, k := range key {
+		err := encodeValue(&buf, k)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteByte(0) // Separator to ensure proper ordering
+	}
+
+	return buf.Bytes(), nil
+}
+
 // FirstKey returns the lexicographically smallest possible key for a given prefix.
 func FirstKey(prefix string) (EncodedKey, error) {
 	return EncodeKey(prefix, nil) // The smallest value
@@ -39,11 +55,11 @@ func FirstKey(prefix string) (EncodedKey, error) {
 
 // LastKey returns the lexicographically largest possible key for a given prefix.
 func LastKey(prefix string) (EncodedKey, error) {
-	return EncodeKey(prefix, maxValue{}) // A value that sorts at the highest position
+	return EncodeKey(prefix, MaxKeyValue{}) // A value that sorts at the highest position
 }
 
-// maxValue is a placeholder for the highest sortable value.
-type maxValue struct{}
+// MaxKeyValue is a placeholder for the highest sortable value.
+type MaxKeyValue struct{}
 
 func encodeValue(buf *bytes.Buffer, v any) error {
 	switch v := v.(type) {
@@ -83,7 +99,7 @@ func encodeValue(buf *bytes.Buffer, v any) error {
 		encodeInt64(buf, int64(v)) // Store as int64 nanoseconds
 	case nil:
 		buf.WriteByte(0x00) // Ensures nil values are minimal in sorting
-	case maxValue:
+	case MaxKeyValue:
 		buf.WriteByte(0xFF) // Ensures max values are at the top
 	default:
 		return fmt.Errorf("unsupported key type: %v", reflect.TypeOf(v))

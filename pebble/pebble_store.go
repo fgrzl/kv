@@ -133,20 +133,33 @@ func (s *store) Enumerate(queryArgs *kv.QueryArgs) enumerators.Enumerator[*kv.It
 		move = func(iter *pebble.Iterator) bool { return iter.Next() }
 
 	case kv.LessThan:
-		options.UpperBound = queryArgs.EndKey
+		upperBound, err := kv.AppendKey(queryArgs.EndKey, kv.MaxKeyValue{})
+		if err != nil {
+			return enumerators.Error[*kv.Item](err)
+		}
+		options.UpperBound = upperBound
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.EndKey) < 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekLT(queryArgs.EndKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Prev() }
 
 	case kv.LessThanOrEqual:
-		options.UpperBound = queryArgs.EndKey
+
+		upperBound, err := kv.AppendKey(queryArgs.EndKey, kv.MaxKeyValue{})
+		if err != nil {
+			return enumerators.Error[*kv.Item](err)
+		}
+		options.UpperBound = upperBound
 		satisfiesOperator = func(key kv.EncodedKey) bool { return bytes.Compare(key, queryArgs.EndKey) <= 0 }
 		seek = func(iter *pebble.Iterator) bool { return iter.SeekLT(queryArgs.EndKey) }
 		move = func(iter *pebble.Iterator) bool { return iter.Prev() }
 
 	case kv.Between:
 		options.LowerBound = queryArgs.StartKey
-		options.UpperBound = queryArgs.EndKey
+		upperBound, err := kv.AppendKey(queryArgs.EndKey, kv.MaxKeyValue{})
+		if err != nil {
+			return enumerators.Error[*kv.Item](err)
+		}
+		options.UpperBound = upperBound
 		satisfiesOperator = func(key kv.EncodedKey) bool {
 			return bytes.Compare(key, queryArgs.StartKey) >= 0 && bytes.Compare(key, queryArgs.EndKey) <= 0
 		}

@@ -175,7 +175,7 @@ func TestQuery_Between(t *testing.T) {
 
 	args := &kv.QueryArgs{
 		StartKey: kv.EncodedKey("b"),
-		EndKey:   kv.EncodedKey("e"),
+		EndKey:   kv.EncodedKey("d"),
 		Operator: kv.Between,
 	}
 
