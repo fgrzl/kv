@@ -36,13 +36,13 @@ func setup(t *testing.T) kv.KV {
 // Test Dataset
 // -----------------
 var TestDataset = []*kv.BatchItem{
-	{Op: kv.Put, Key: kv.EncodedKey("a"), Value: []byte("A")},
-	{Op: kv.Put, Key: kv.EncodedKey("b"), Value: []byte("B")},
-	{Op: kv.Put, Key: kv.EncodedKey("c"), Value: []byte("C")},
-	{Op: kv.Put, Key: kv.EncodedKey("d"), Value: []byte("D")},
-	{Op: kv.Put, Key: kv.EncodedKey("e"), Value: []byte("E")},
-	{Op: kv.Put, Key: kv.EncodedKey("f"), Value: []byte("F")},
-	{Op: kv.Put, Key: kv.EncodedKey("g"), Value: []byte("G")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "a"), Value: []byte("A")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "b"), Value: []byte("B")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "c"), Value: []byte("C")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "d"), Value: []byte("D")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "e"), Value: []byte("E")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "f"), Value: []byte("F")},
+	{Op: kv.Put, Key: kv.EncodeKey("test", "g"), Value: []byte("G")},
 }
 
 // -----------------
@@ -53,7 +53,7 @@ func TestPut(t *testing.T) {
 	t.Run("Should store and retrieve an item correctly", func(t *testing.T) {
 		// Arrange
 		db := setup(t)
-		item := &kv.Item{Key: kv.EncodedKey("key1"), Value: []byte("value1")}
+		item := &kv.Item{Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")}
 
 		// Act
 		err := db.Put(item)
@@ -72,8 +72,8 @@ func TestPutBatch(t *testing.T) {
 		// Arrange
 		db := setup(t)
 		items := []*kv.BatchItem{
-			{Op: kv.Put, Key: kv.EncodedKey("key1"), Value: []byte("value1")},
-			{Op: kv.Put, Key: kv.EncodedKey("key2"), Value: []byte("value2")},
+			{Op: kv.Put, Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")},
+			{Op: kv.Put, Key: kv.EncodeKey("test", "key2"), Value: []byte("value2")},
 		}
 
 		// Act
@@ -94,7 +94,7 @@ func TestRemove(t *testing.T) {
 	t.Run("Should delete an existing item", func(t *testing.T) {
 		// Arrange
 		db := setup(t)
-		item := &kv.Item{Key: kv.EncodedKey("key1"), Value: []byte("value1")}
+		item := &kv.Item{Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")}
 		db.Put(item)
 
 		// Act
@@ -114,7 +114,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 	require.NoError(t, err)
 
 	query := &kv.QueryArgs{
-		StartKey: kv.EncodedKey("b"),
+		StartKey: kv.EncodeKey("test", "b"),
 		Operator: kv.Equal,
 	}
 
@@ -124,7 +124,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
-	assert.Equal(t, kv.EncodedKey("b"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "b"), results[0].Key)
 }
 
 func TestQuery_GreaterThan(t *testing.T) {
@@ -134,7 +134,7 @@ func TestQuery_GreaterThan(t *testing.T) {
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{
-		StartKey: kv.EncodedKey("c"),
+		StartKey: kv.EncodeKey("test", "c"),
 		Operator: kv.GreaterThan,
 	}
 
@@ -144,7 +144,34 @@ func TestQuery_GreaterThan(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 4) // "d", "e", "f", "g"
-	assert.Equal(t, kv.EncodedKey("d"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "d"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "e"), results[1].Key)
+	assert.Equal(t, kv.EncodeKey("test", "f"), results[2].Key)
+	assert.Equal(t, kv.EncodeKey("test", "g"), results[3].Key)
+}
+
+func TestQuery_GreaterThanEqual(t *testing.T) {
+	// Arrange
+	db := setup(t)
+	err := db.Batch(TestDataset)
+	require.NoError(t, err)
+
+	args := &kv.QueryArgs{
+		StartKey: kv.EncodeKey("test", "c"),
+		Operator: kv.GreaterThanOrEqual,
+	}
+
+	// Act
+	results, err := db.Query(args, kv.Ascending)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, results, 5) //"c" "d", "e", "f", "g"
+	assert.Equal(t, kv.EncodeKey("test", "c"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "d"), results[1].Key)
+	assert.Equal(t, kv.EncodeKey("test", "e"), results[2].Key)
+	assert.Equal(t, kv.EncodeKey("test", "f"), results[3].Key)
+	assert.Equal(t, kv.EncodeKey("test", "g"), results[4].Key)
 }
 
 func TestQuery_LessThan(t *testing.T) {
@@ -154,7 +181,7 @@ func TestQuery_LessThan(t *testing.T) {
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{
-		EndKey:   kv.EncodedKey("d"),
+		EndKey:   kv.EncodeKey("test", "d"),
 		Operator: kv.LessThan,
 	}
 
@@ -164,7 +191,27 @@ func TestQuery_LessThan(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 3) // "a", "b", "c"
-	assert.Equal(t, kv.EncodedKey("a"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "a"), results[0].Key)
+}
+
+func TestQuery_LessThanOrEqual(t *testing.T) {
+	// Arrange
+	db := setup(t)
+	err := db.Batch(TestDataset)
+	require.NoError(t, err)
+
+	args := &kv.QueryArgs{
+		EndKey:   kv.EncodeKey("test", "d"),
+		Operator: kv.LessThanOrEqual,
+	}
+
+	// Act
+	results, err := db.Query(args, kv.Ascending)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, results, 3) // "a", "b", "c"
+	assert.Equal(t, kv.EncodeKey("test", "a"), results[0].Key)
 }
 
 func TestQuery_Between(t *testing.T) {
@@ -174,8 +221,8 @@ func TestQuery_Between(t *testing.T) {
 	require.NoError(t, err)
 
 	args := &kv.QueryArgs{
-		StartKey: kv.EncodedKey("b"),
-		EndKey:   kv.EncodedKey("d"),
+		StartKey: kv.EncodeKey("test", "b"),
+		EndKey:   kv.EncodeKey("test", "d"),
 		Operator: kv.Between,
 	}
 
@@ -185,5 +232,7 @@ func TestQuery_Between(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 3) // "b", "c", "d"
-	assert.Equal(t, kv.EncodedKey("b"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "b"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("test", "c"), results[1].Key)
+	assert.Equal(t, kv.EncodeKey("test", "d"), results[2].Key)
 }

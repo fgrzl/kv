@@ -11,55 +11,150 @@ import (
 	"github.com/google/uuid"
 )
 
-type EncodedKey []byte
+func NewEncodedKey(prefix string, key ...any) (EncodedKey, error) {
+	var encodedKey EncodedKey
 
-// EncodeKey constructs a lexicographically sortable multipart key.
-func EncodeKey(prefix string, key ...any) (EncodedKey, error) {
-	var buf bytes.Buffer
+	// Precompute total length for a single allocation
+	totalLen := 0
+	encodedParts := make([][]byte, len(key))
 
-	// Add prefix with a null separator to prevent conflicts
-	buf.WriteString(prefix)
-	buf.WriteByte(0) // Null byte separator ensures prefix remains distinct
-
-	for _, k := range key {
-		err := encodeValue(&buf, k)
+	for i, k := range key {
+		part, err := encodeDirect(k)
 		if err != nil {
-			return nil, err
+			return encodedKey, err
 		}
-		buf.WriteByte(0) // Separator to ensure proper ordering
+		encodedParts[i] = part
+		totalLen += len(part)
+		if i < len(key)-1 {
+			totalLen++ // Add separator space
+		}
 	}
 
-	return buf.Bytes(), nil
-}
+	// Allocate the buffer once
+	buf := make([]byte, totalLen)
+	offset := 0
 
-func AppendKey(encodedKey EncodedKey, key ...any) (EncodedKey, error) {
-	var buf bytes.Buffer
-
-	buf.Write(encodedKey)
-	buf.WriteByte(0) // Null byte separator ensures prefix remains distinct
-	for _, k := range key {
-		err := encodeValue(&buf, k)
-		if err != nil {
-			return nil, err
+	// Copy data and separators
+	for i, part := range encodedParts {
+		copy(buf[offset:], part)
+		offset += len(part)
+		if i < len(encodedParts)-1 {
+			buf[offset] = 0x00 // Separator
+			offset++
 		}
-		buf.WriteByte(0) // Separator to ensure proper ordering
 	}
 
-	return buf.Bytes(), nil
+	encodedKey.Prefix = prefix
+	encodedKey.Key = buf
+
+	return encodedKey, nil
 }
 
-// FirstKey returns the lexicographically smallest possible key for a given prefix.
-func FirstKey(prefix string) (EncodedKey, error) {
-	return EncodeKey(prefix, nil) // The smallest value
+// get an encoded key, returns an empty key if an error occurs.
+func EncodeKey(prefix string, key ...any) EncodedKey {
+	ek, _ := NewEncodedKey(prefix, key...)
+	return ek
 }
 
-// LastKey returns the lexicographically largest possible key for a given prefix.
-func LastKey(prefix string) (EncodedKey, error) {
-	return EncodeKey(prefix, MaxKeyValue{}) // A value that sorts at the highest position
+func LastKey(prefix string) EncodedKey {
+	return EncodedKey{Prefix: prefix}
 }
 
-// MaxKeyValue is a placeholder for the highest sortable value.
-type MaxKeyValue struct{}
+// EncodedKey represents a structured key with a prefix and a sortable key.
+type EncodedKey struct {
+	Prefix string
+	Key    []byte
+}
+
+func (e EncodedKey) IsEmpty() bool {
+	return e.Prefix == "" && len(e.Key) == 0
+}
+
+// Encode returns a fully encoded key with prefix and key, maintaining lexicographic order.
+func (e *EncodedKey) Encode() []byte {
+	prefixLen := len(e.Prefix)
+	keyLen := len(e.Key)
+
+	// Allocate buffer (4 bytes for length + prefix + 1 null byte + key)
+	buf := make([]byte, 4+prefixLen+1+keyLen)
+
+	// Store the prefix length in the first 4 bytes (big-endian)
+	binary.BigEndian.PutUint32(buf[:4], uint32(prefixLen))
+
+	// Copy prefix
+	copy(buf[4:], e.Prefix)
+
+	// Store null-byte separator
+	buf[4+prefixLen] = 0x00
+
+	// Copy key after the null byte
+	copy(buf[5+prefixLen:], e.Key)
+
+	return buf
+}
+
+// EncodeFirst returns the logical first key.
+func (e *EncodedKey) EncodeFirst() []byte {
+	// Append a null byte (0x00) to ensure this is the first key lexicographically
+	return append(e.Encode(), 0x00)
+}
+
+// EncodeLast returns the logical last key.
+func (e *EncodedKey) EncodeLast() []byte {
+	// Append a max byte (0xFF) to ensure this is the last key lexicographically
+	return append(e.Encode(), 0xFF)
+}
+
+// EncodeFirstInPrefix returns the first key lexicographically within the prefix range.
+func (e *EncodedKey) EncodeFirstInPrefix() []byte {
+	// Encode only the prefix, ensuring this is the first key in that range
+	buf := make([]byte, 4+len(e.Prefix)+1)
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(e.Prefix))) // Store prefix length
+	copy(buf[4:], e.Prefix)                                    // Copy prefix
+	buf[4+len(e.Prefix)] = 0x00                                // Smallest possible value to mark the start
+
+	return buf
+}
+
+// EncodeLastInPrefix returns the last key lexicographically within the prefix range.
+func (e *EncodedKey) EncodeLastInPrefix() []byte {
+	// Append the max byte (0xFF) directly to the prefix, ensuring it stays within the prefix range
+	buf := make([]byte, 4+len(e.Prefix)+1)
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(e.Prefix))) // Store prefix length
+	copy(buf[4:], e.Prefix)                                    // Copy prefix
+	buf[4+len(e.Prefix)] = 0xFF                                // Max byte to ensure upper bound
+
+	return buf
+}
+
+func (e *EncodedKey) Decode(encoded []byte) {
+	if len(encoded) < 5 { // Minimum valid size: 4-byte length + 1-byte null separator
+		return
+	}
+
+	// Extract prefix length from the first 4 bytes
+	prefixLen := int(binary.BigEndian.Uint32(encoded[:4]))
+
+	// Validate that the encoded data is long enough for the prefix
+	if len(encoded) < 4+prefixLen+1 {
+		return
+	}
+
+	// Extract prefix as a string
+	prefix := string(encoded[4 : 4+prefixLen])
+
+	// Ensure the separator exists
+	if encoded[4+prefixLen] != 0x00 {
+		return
+	}
+
+	// Extract the key (after the null-byte separator)
+	key := encoded[5+prefixLen:]
+
+	// Return parsed EncodedKey
+	e.Prefix = prefix
+	e.Key = append([]byte{}, key...)
+}
 
 func encodeValue(buf *bytes.Buffer, v any) error {
 	switch v := v.(type) {
@@ -99,7 +194,7 @@ func encodeValue(buf *bytes.Buffer, v any) error {
 		encodeInt64(buf, int64(v)) // Store as int64 nanoseconds
 	case nil:
 		buf.WriteByte(0x00) // Ensures nil values are minimal in sorting
-	case MaxKeyValue:
+	case struct{}:
 		buf.WriteByte(0xFF) // Ensures max values are at the top
 	default:
 		return fmt.Errorf("unsupported key type: %v", reflect.TypeOf(v))
@@ -172,4 +267,85 @@ func encodeFloat32(buf *bytes.Buffer, f float32) {
 // encodeTime encodes a timestamp in UTC as a lexicographically sortable value.
 func encodeTime(buf *bytes.Buffer, t time.Time) {
 	encodeInt64(buf, t.UTC().UnixNano()) // Store as nanoseconds since epoch
+}
+
+func encodeDirect(v any) ([]byte, error) {
+	switch v := v.(type) {
+	case string:
+		return []byte(v), nil
+	case uuid.UUID:
+		return v[:], nil
+	case []byte:
+		return v, nil
+	case int:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(v)^1<<63)
+		return b, nil
+	case int64:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(v)^1<<63)
+		return b, nil
+	case int32:
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, uint32(v)^1<<31)
+		return b, nil
+	case uint64:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, v)
+		return b, nil
+	case uint32:
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, v)
+		return b, nil
+	case uint16:
+		b := make([]byte, 2)
+		binary.BigEndian.PutUint16(b, v)
+		return b, nil
+	case uint8:
+		return []byte{v}, nil
+	case float64:
+		b := make([]byte, 8)
+		bits := math.Float64bits(v)
+		if v < 0 {
+			bits ^= 0xffffffffffffffff // Flip bits for negative numbers
+		} else {
+			bits ^= 1 << 63 // Offset to maintain order
+		}
+		binary.BigEndian.PutUint64(b, bits)
+		return b, nil
+	case float32:
+		b := make([]byte, 4)
+		bits := math.Float32bits(v)
+		if v < 0 {
+			bits ^= 0xffffffff
+		} else {
+			bits ^= 1 << 31
+		}
+		binary.BigEndian.PutUint32(b, bits)
+		return b, nil
+	case bool:
+		if v {
+			return []byte{1}, nil
+		}
+		return []byte{0}, nil
+	case time.Time:
+		return encodeTimeDirect(v), nil
+	case time.Duration:
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(v.Nanoseconds())^1<<63)
+		return b, nil
+	case nil:
+		return []byte{0x00}, nil // Minimal in sorting
+	case struct{}:
+		return []byte{0xFF}, nil // Max value for sorting
+	default:
+		return nil, fmt.Errorf("unsupported key type: %v", reflect.TypeOf(v))
+	}
+}
+
+// encodeTimeDirect encodes time.Time as a sortable byte slice
+func encodeTimeDirect(t time.Time) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(t.UTC().UnixNano())^1<<63)
+	return b
 }
