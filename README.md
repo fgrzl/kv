@@ -1,67 +1,25 @@
 [![ci](https://github.com/fgrzl/kv/actions/workflows/ci.yml/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/ci.yml)
 [![Dependabot Updates](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates)
 
-# A basic kv store
+# KV
 
-```go
-func main() {
-	store, err := pebble.NewPebbleStore("./mydb")
-	defer store.Close()
-	if err != nil {
-		log.Printf("Failed to initialize Pebble DB: %v\n", err)
-		return
-	}
-	// Put an item
-	item := &kv.Item{Key: kv.EncodedKey("key1"), Value: []byte("value1")}
-	err = store.Put(item)
+This library provides a simple and flexible **key-value store abstraction** with support for CRUD operations, batch writes, range queries, and efficient enumeration.
 
-	// Get an item
-	result, err := store.Get(item.Key)
-	if err != nil {
-		log.Printf("Failed to get item: %v\n", err)
-		return
-	}
-	log.Printf("%s\n", string(result.Value))
+The KV interface allows you to interact with different backends (e.g., Pebble, etc) seamlessly.
 
-	// Put multiple items
-	items := []*kv.BatchItem{
-		{Op: kv.Put, Key: kv.EncodedKey("key1"), Value: []byte("value1")},
-		{Op: kv.Put, Key: kv.EncodedKey("key2"), Value: []byte("value2")},
-		{Op: kv.Put, Key: kv.EncodedKey("key3"), Value: []byte("value3")},
-		{Op: kv.Put, Key: kv.EncodedKey("key4"), Value: []byte("value4")},
-		{Op: kv.Put, Key: kv.EncodedKey("key5"), Value: []byte("value6")},
-	}
-	err = store.Batch(items)
-	if err != nil {
-		log.Printf("Failed to put batch: %v\n", err)
-		return
-	}
+---
 
-	// Query items
-	query := &kv.QueryArgs{
-		StartKey: kv.EncodedKey("key2"),
-		EndKey:   kv.EncodedKey("key4"),
-		Operator: kv.Between,
-	}
+## 🚀 **Features**
 
-	// Enumerate the results
-	enumerator := store.Enumerate(query)
-	defer enumerator.Dispose()
-	for enumerator.MoveNext() {
-		item, err := enumerator.Current()
-		if err != nil {
-			log.Printf("Failed to retrieve item: %v\n", err)
-			continue
-		}
-		log.Printf("%s\n", string(item.Value))
-	}
+- 🔑 Basic CRUD operations (`Get`, `Put`, `Remove`)
+- ⚡ Batch operations with deduplication support
+- 🔍 Range and prefix queries
+- 🔄 Efficient item enumeration
+- 🛠️ Support for custom query operators (e.g., `GreaterThan`, `Between`, `StartsWith`)
 
-	// Or use the Query method to collect the results as a slice
-	results, err := store.Query(query, kv.Ascending)
-	if err != nil {
-		log.Printf("Failed to query items: %v\n", err)
-		return
-	}
-	log.Printf("Results: %d\n", len(results))
-}
-```
+---
+
+## 📦 **Installation**
+
+```bash
+go get github.com/fgrzl/kv
