@@ -1,3 +1,6 @@
+[![ci](https://github.com/fgrzl/kv/actions/workflows/ci.yml/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/ci.yml)
+[![Dependabot Updates](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates)
+
 # A basic kv store
 
 ```go
@@ -21,14 +24,14 @@ func main() {
 	log.Printf("%s\n", string(result.Value))
 
 	// Put multiple items
-	items := []*kv.Item{
-		{Key: kv.EncodedKey("key1"), Value: []byte("value1")},
-		{Key: kv.EncodedKey("key2"), Value: []byte("value2")},
-		{Key: kv.EncodedKey("key3"), Value: []byte("value3")},
-		{Key: kv.EncodedKey("key4"), Value: []byte("value4")},
-		{Key: kv.EncodedKey("key5"), Value: []byte("value6")},
+	items := []*kv.BatchItem{
+		{Op: kv.Put, Key: kv.EncodedKey("key1"), Value: []byte("value1")},
+		{Op: kv.Put, Key: kv.EncodedKey("key2"), Value: []byte("value2")},
+		{Op: kv.Put, Key: kv.EncodedKey("key3"), Value: []byte("value3")},
+		{Op: kv.Put, Key: kv.EncodedKey("key4"), Value: []byte("value4")},
+		{Op: kv.Put, Key: kv.EncodedKey("key5"), Value: []byte("value6")},
 	}
-	err = store.PutBatch(items)
+	err = store.Batch(items)
 	if err != nil {
 		log.Printf("Failed to put batch: %v\n", err)
 		return
