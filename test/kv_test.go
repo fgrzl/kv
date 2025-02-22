@@ -192,7 +192,6 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 	assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
 	assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
 	assert.Equal(t, kv.EncodeKey("d"), results[3].PK.RowKey)
-
 }
 
 func TestQuery_Between(t *testing.T) {
