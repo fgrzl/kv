@@ -23,6 +23,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/fgrzl/enumerators v0.0.0-20250221201701-957a19cd53e7 h1:Cck9hZm02B7MJKgrJaxYm8ezGx3yt17x6vge0eipuig=
 github.com/fgrzl/enumerators v0.0.0-20250221201701-957a19cd53e7/go.mod h1:Gptn6zzaFfcrcDi0jl222ZtfMpPhUXS19RJ6WswqX4k=
+github.com/fgrzl/enumerators v0.0.0-20250222224518-ba7753d0550c h1:s3fIS4LvJjkmtN+mivqVfGEqgs707T6rZTkTTst7puU=
+github.com/fgrzl/enumerators v0.0.0-20250222224518-ba7753d0550c/go.mod h1:Gptn6zzaFfcrcDi0jl222ZtfMpPhUXS19RJ6WswqX4k=
 github.com/getsentry/sentry-go v0.31.1 h1:ELVc0h7gwyhnXHDouXkhqTFSO5oslsRDk0++eyE0KJ4=
 github.com/getsentry/sentry-go v0.31.1/go.mod h1:CYNcMMz73YigoHljQRG+qPF+eMq8gG72XcGN/p71BAY=
 github.com/go-errors/errors v1.4.2 h1:J6MZopCL4uSllY1OfXM374weqZFFItUbrImctkmUxIA=
