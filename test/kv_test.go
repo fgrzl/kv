@@ -12,6 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var partitionKey = kv.EncodeKey("test")
+var sampleData = []*kv.Item{
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("a")), Value: []byte("A")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("b")), Value: []byte("B")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("c")), Value: []byte("C")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("d")), Value: []byte("D")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("e")), Value: []byte("E")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("f")), Value: []byte("F")},
+	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("g")), Value: []byte("G")},
+}
+
 // Setup function initializes a test database and ensures cleanup after the test.
 func setup(t *testing.T) kv.KV {
 	// Arrange
@@ -24,6 +35,13 @@ func setup(t *testing.T) kv.KV {
 		t.Fatalf("Failed to initialize Pebble DB: %v", err)
 	}
 
+	var batch []*kv.BatchItem
+	for _, item := range sampleData {
+		batch = append(batch, &kv.BatchItem{Op: kv.Put, PK: item.PK, Value: item.Value})
+	}
+	err = store.Batch(batch)
+	require.NoError(t, err)
+
 	// Cleanup after test
 	t.Cleanup(func() {
 		store.Close()
@@ -32,90 +50,51 @@ func setup(t *testing.T) kv.KV {
 	return store
 }
 
-// -----------------
-// Test Dataset
-// -----------------
-var TestDataset = []*kv.BatchItem{
-	{Op: kv.Put, Key: kv.EncodeKey("test", "a"), Value: []byte("A")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "b"), Value: []byte("B")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "c"), Value: []byte("C")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "d"), Value: []byte("D")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "e"), Value: []byte("E")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "f"), Value: []byte("F")},
-	{Op: kv.Put, Key: kv.EncodeKey("test", "g"), Value: []byte("G")},
-}
-
-// -----------------
-// Tests for KV Store Methods
-// -----------------
-
 func TestPut(t *testing.T) {
-	t.Run("Should store and retrieve an item correctly", func(t *testing.T) {
-		// Arrange
-		db := setup(t)
-		item := &kv.Item{Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")}
+	// Arrange
+	db := setup(t)
+	item := &kv.Item{PK: kv.NewPrimaryKey(kv.EncodeKey("put-test"), kv.EncodeKey(1)), Value: []byte("hello world")}
 
-		// Act
-		err := db.Put(item)
+	// Act
+	err := db.Put(item)
 
-		// Assert
-		result, errGet := db.Get(item.Key)
-		assert.NoError(t, err)
-		assert.NoError(t, errGet)
-		assert.NotNil(t, result)
-		assert.Equal(t, item.Value, result.Value)
-	})
-}
-
-func TestPutBatch(t *testing.T) {
-	t.Run("Should store multiple items", func(t *testing.T) {
-		// Arrange
-		db := setup(t)
-		items := []*kv.BatchItem{
-			{Op: kv.Put, Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")},
-			{Op: kv.Put, Key: kv.EncodeKey("test", "key2"), Value: []byte("value2")},
-		}
-
-		// Act
-		err := db.Batch(items)
-
-		// Assert
-		result1, _ := db.Get(items[0].Key)
-		result2, _ := db.Get(items[1].Key)
-		assert.NoError(t, err)
-		assert.NotNil(t, result1)
-		assert.NotNil(t, result2)
-		assert.Equal(t, items[0].Value, result1.Value)
-		assert.Equal(t, items[1].Value, result2.Value)
-	})
+	// Assert
+	result, errGet := db.Get(item.PK)
+	assert.NoError(t, err)
+	assert.NoError(t, errGet)
+	assert.NotNil(t, result)
+	assert.Equal(t, item.PK, result.PK)
+	assert.Equal(t, item.Value, result.Value)
 }
 
 func TestRemove(t *testing.T) {
-	t.Run("Should delete an existing item", func(t *testing.T) {
-		// Arrange
-		db := setup(t)
-		item := &kv.Item{Key: kv.EncodeKey("test", "key1"), Value: []byte("value1")}
-		db.Put(item)
 
-		// Act
-		err := db.Remove(item.Key)
+	// Arrange
+	db := setup(t)
+	item := sampleData[0]
+	result, errGet := db.Get(item.PK)
+	require.NoError(t, errGet)
+	require.NotNil(t, result)
 
-		// Assert
-		result, _ := db.Get(item.Key)
-		assert.NoError(t, err)
-		assert.Nil(t, result)
-	})
+	// Act
+	err := db.Remove(item.PK)
+
+	// Assert
+	assert.NoError(t, err)
+	result, errGet = db.Get(item.PK)
+	assert.NoError(t, err)
+	assert.NoError(t, errGet)
+	assert.Nil(t, result)
 }
 
 func TestQuery_ExactMatch(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	query := &kv.QueryArgs{
-		StartKey: kv.EncodeKey("test", "b"),
-		Operator: kv.Equal,
+	query := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		StartRowKey:  kv.EncodeKey("b"),
+		Operator:     kv.Equal,
 	}
 
 	// Act
@@ -124,18 +103,17 @@ func TestQuery_ExactMatch(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
-	assert.Equal(t, kv.EncodeKey("test", "b"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
 }
 
 func TestQuery_GreaterThan(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	args := &kv.QueryArgs{
-		StartKey: kv.EncodeKey("test", "c"),
-		Operator: kv.GreaterThan,
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		StartRowKey:  kv.EncodeKey("c"),
+		Operator:     kv.GreaterThan,
 	}
 
 	// Act
@@ -144,21 +122,20 @@ func TestQuery_GreaterThan(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 4) // "d", "e", "f", "g"
-	assert.Equal(t, kv.EncodeKey("test", "d"), results[0].Key)
-	assert.Equal(t, kv.EncodeKey("test", "e"), results[1].Key)
-	assert.Equal(t, kv.EncodeKey("test", "f"), results[2].Key)
-	assert.Equal(t, kv.EncodeKey("test", "g"), results[3].Key)
+	assert.Equal(t, kv.EncodeKey("d"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("e"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("f"), results[2].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("g"), results[3].PK.RowKey)
 }
 
 func TestQuery_GreaterThanEqual(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	args := &kv.QueryArgs{
-		StartKey: kv.EncodeKey("test", "c"),
-		Operator: kv.GreaterThanOrEqual,
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		StartRowKey:  kv.EncodeKey("c"),
+		Operator:     kv.GreaterThanOrEqual,
 	}
 
 	// Act
@@ -167,22 +144,21 @@ func TestQuery_GreaterThanEqual(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 5) //"c" "d", "e", "f", "g"
-	assert.Equal(t, kv.EncodeKey("test", "c"), results[0].Key)
-	assert.Equal(t, kv.EncodeKey("test", "d"), results[1].Key)
-	assert.Equal(t, kv.EncodeKey("test", "e"), results[2].Key)
-	assert.Equal(t, kv.EncodeKey("test", "f"), results[3].Key)
-	assert.Equal(t, kv.EncodeKey("test", "g"), results[4].Key)
+	assert.Equal(t, kv.EncodeKey("c"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("d"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("e"), results[2].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("f"), results[3].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("g"), results[4].PK.RowKey)
 }
 
 func TestQuery_LessThan(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	args := &kv.QueryArgs{
-		EndKey:   kv.EncodeKey("test", "d"),
-		Operator: kv.LessThan,
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		EndRowKey:    kv.EncodeKey("d"),
+		Operator:     kv.LessThan,
 	}
 
 	// Act
@@ -191,18 +167,19 @@ func TestQuery_LessThan(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 3) // "a", "b", "c"
-	assert.Equal(t, kv.EncodeKey("test", "a"), results[0].Key)
+	assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
 }
 
 func TestQuery_LessThanOrEqual(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	args := &kv.QueryArgs{
-		EndKey:   kv.EncodeKey("test", "d"),
-		Operator: kv.LessThanOrEqual,
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		EndRowKey:    kv.EncodeKey("d"),
+		Operator:     kv.LessThanOrEqual,
 	}
 
 	// Act
@@ -210,20 +187,23 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	assert.Len(t, results, 3) // "a", "b", "c"
-	assert.Equal(t, kv.EncodeKey("test", "a"), results[0].Key)
+	assert.Len(t, results, 4) // "a", "b", "c", "d"
+	assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("d"), results[3].PK.RowKey)
+
 }
 
 func TestQuery_Between(t *testing.T) {
 	// Arrange
 	db := setup(t)
-	err := db.Batch(TestDataset)
-	require.NoError(t, err)
 
-	args := &kv.QueryArgs{
-		StartKey: kv.EncodeKey("test", "b"),
-		EndKey:   kv.EncodeKey("test", "d"),
-		Operator: kv.Between,
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		StartRowKey:  kv.EncodeKey("b"),
+		EndRowKey:    kv.EncodeKey("d"),
+		Operator:     kv.Between,
 	}
 
 	// Act
@@ -232,7 +212,7 @@ func TestQuery_Between(t *testing.T) {
 	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, results, 3) // "b", "c", "d"
-	assert.Equal(t, kv.EncodeKey("test", "b"), results[0].Key)
-	assert.Equal(t, kv.EncodeKey("test", "c"), results[1].Key)
-	assert.Equal(t, kv.EncodeKey("test", "d"), results[2].Key)
+	assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("c"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("d"), results[2].PK.RowKey)
 }
