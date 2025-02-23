@@ -65,21 +65,32 @@ type RangeKey struct {
 	EndRowKey    EncodedKey
 }
 
-func (rk *RangeKey) Encode() (lower, upper EncodedKey) {
-	lower = encodeBoundary(rk.PartitionKey, rk.StartRowKey, false) // Lower bound ends with 0x00
-	upper = encodeBoundary(rk.PartitionKey, rk.EndRowKey, true)    // Upper bound ends with 0xFF
+// Encode encodes the range boundaries with an option to include/exclude the partition key.
+func (rk *RangeKey) Encode(withPartitionKey bool) (lower, upper EncodedKey) {
+	lower = encodeBoundary(rk.PartitionKey, rk.StartRowKey, false, withPartitionKey) // Lower bound ends with 0x00
+	upper = encodeBoundary(rk.PartitionKey, rk.EndRowKey, true, withPartitionKey)    // Upper bound ends with 0xFF
 	return lower, upper
 }
 
-func encodeBoundary(partitionKey, rowKey []byte, isUpper bool) EncodedKey {
-	// Calculate the required size: partition + delimiter + rowKey + optional end marker
+// encodeBoundary encodes the key boundaries, optionally including the partition key.
+func encodeBoundary(partitionKey, rowKey []byte, isUpper, withPartitionKey bool) EncodedKey {
 	additionalBytes := 1 // For separator or terminator
 	if len(rowKey) > 0 {
 		additionalBytes++ // Additional byte for the end marker if rowKey exists
 	}
 
-	result := make([]byte, 0, len(partitionKey)+len(rowKey)+additionalBytes)
-	result = append(result, partitionKey...)
+	// Calculate total length considering whether to include the partition key
+	partitionLength := 0
+	if withPartitionKey {
+		partitionLength = len(partitionKey)
+	}
+
+	result := make([]byte, 0, partitionLength+len(rowKey)+additionalBytes)
+
+	if withPartitionKey {
+		result = append(result, partitionKey...)
+	}
+
 	if len(rowKey) == 0 {
 		// If rowKey is empty, append end-of-range marker directly for upper boundary
 		if isUpper {
@@ -90,7 +101,9 @@ func encodeBoundary(partitionKey, rowKey []byte, isUpper bool) EncodedKey {
 		return result
 	}
 
-	result = append(result, 0x00) // PartitionKey separator
+	if withPartitionKey {
+		result = append(result, 0x00) // PartitionKey separator if partition key is included
+	}
 	result = append(result, rowKey...)
 
 	// Append end marker for upper boundary
