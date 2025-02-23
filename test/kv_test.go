@@ -102,7 +102,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	assert.Len(t, results, 1)
+	assert.Len(t, results, 1) // "b"
 	assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
 }
 
@@ -214,4 +214,49 @@ func TestQuery_Between(t *testing.T) {
 	assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
 	assert.Equal(t, kv.EncodeKey("c"), results[1].PK.RowKey)
 	assert.Equal(t, kv.EncodeKey("d"), results[2].PK.RowKey)
+}
+
+func TestQuery_PartitionScan(t *testing.T) {
+	// Arrange
+	db := setup(t)
+
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		Operator:     kv.Scan,
+	}
+
+	// Act
+	results, err := db.Query(args, kv.Ascending)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, results, 7) // "a", "b", "c", "d", "e", "f", "g"
+	assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("d"), results[3].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("e"), results[4].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("f"), results[5].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("g"), results[6].PK.RowKey)
+}
+
+func TestQuery_PartitionScanWithLimit(t *testing.T) {
+	// Arrange
+	db := setup(t)
+
+	args := kv.QueryArgs{
+		PartitionKey: partitionKey,
+		Operator:     kv.Scan,
+		Limit:        3,
+	}
+
+	// Act
+	results, err := db.Query(args, kv.Ascending)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, results, 3) // "a", "b", "c"
+	assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
+	assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
 }

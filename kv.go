@@ -66,29 +66,38 @@ type RangeKey struct {
 }
 
 func (rk *RangeKey) Encode() (lower, upper EncodedKey) {
-	lower = encodeLowerBoundary(rk.PartitionKey, rk.StartRowKey) // Lower bound ends with 0x00
-	upper = encodeUpperBoundary(rk.PartitionKey, rk.EndRowKey)   // Upper bound ends with 0xFF
+	lower = encodeBoundary(rk.PartitionKey, rk.StartRowKey, false) // Lower bound ends with 0x00
+	upper = encodeBoundary(rk.PartitionKey, rk.EndRowKey, true)    // Upper bound ends with 0xFF
 	return lower, upper
 }
 
-// Helper function to encode boundaries with a given terminator
-func encodeLowerBoundary(partitionKey, rowKey []byte) EncodedKey {
-	result := make([]byte, 0, len(partitionKey)+len(rowKey)+1)
-	result = append(result, partitionKey...)
-	result = append(result, 0x00)
-	result = append(result, rowKey...)
+func encodeBoundary(partitionKey, rowKey []byte, isUpper bool) EncodedKey {
+	// Calculate the required size: partition + delimiter + rowKey + optional end marker
+	additionalBytes := 1 // For separator or terminator
+	if len(rowKey) > 0 {
+		additionalBytes++ // Additional byte for the end marker if rowKey exists
+	}
 
-	return result
-}
-
-// Helper function to encode boundaries with a given terminator
-func encodeUpperBoundary(partitionKey, rowKey []byte) EncodedKey {
-	// Pre-allocate with space for two delimiters (partition separator + end marker)
-	result := make([]byte, 0, len(partitionKey)+len(rowKey)+2)
+	result := make([]byte, 0, len(partitionKey)+len(rowKey)+additionalBytes)
 	result = append(result, partitionKey...)
+	if len(rowKey) == 0 {
+		// If rowKey is empty, append end-of-range marker directly for upper boundary
+		if isUpper {
+			result = append(result, 0xFF)
+		} else {
+			result = append(result, 0x00)
+		}
+		return result
+	}
+
 	result = append(result, 0x00) // PartitionKey separator
 	result = append(result, rowKey...)
-	result = append(result, 0xFF) // End-of-range marker
+
+	// Append end marker for upper boundary
+	if isUpper {
+		result = append(result, 0xFF)
+	}
+
 	return result
 }
 
@@ -141,7 +150,7 @@ type QueryArgs struct {
 type QueryOperator int
 
 const (
-	None QueryOperator = iota
+	Scan QueryOperator = iota
 	Equal
 	GreaterThan
 	LessThan

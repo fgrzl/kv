@@ -38,7 +38,7 @@ type EncodedKey []byte
 
 // IsEmpty checks if the EncodedKey is empty (no prefix and no key).
 func (e EncodedKey) IsEmpty() bool {
-	return e == nil || len(e) == 0
+	return len(e) == 0
 }
 
 // Helper function to encode different value types directly into bytes.

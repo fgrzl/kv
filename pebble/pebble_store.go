@@ -312,6 +312,7 @@ func (s *store) Batch(items []*kv.BatchItem) error {
 }
 
 func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
+	defer items.Dispose()
 	chunks := enumerators.ChunkByCount(items, chunkSize)
 	for chunks.MoveNext() {
 		chunk, err := chunks.Current()
