@@ -11,6 +11,8 @@ import (
 	"github.com/fgrzl/kv"
 )
 
+var _ kv.KV = (*store)(nil)
+
 type store struct {
 	db       *pebble.DB
 	disposed sync.Once
@@ -117,7 +119,12 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 	// Define iteration behavior based on operator
 	satisfies, seek, move := getOperatorFunctions(args.Operator)
 
-	rangeKey := kv.NewRangeKey(args.PartitionKey, args.StartRowKey, args.EndRowKey)
+	rangeKey := kv.RangeKey{
+		PartitionKey: args.PartitionKey,
+		StartRowKey:  args.StartRowKey,
+		EndRowKey:    args.EndRowKey,
+	}
+
 	lower, upper := rangeKey.Encode(true)
 
 	opts := &pebble.IterOptions{

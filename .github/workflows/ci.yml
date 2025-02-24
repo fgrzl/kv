@@ -27,16 +27,13 @@ jobs:
       - name: setup go
         uses: actions/setup-go@v4
         with:
-          go-version: 1.23.2
+          go-version: 1.23.5
 
-      - name: install protoc
-        uses: ./.github/actions/install-protoc  
+      - name: setup test infrastructure
+        run: docker compose -f test/compose.yml up -d
 
       - name: install dependencies
         run: go mod tidy
-
-      - name: generate
-        run: go generate ./...
       
       - name: build
         run: go build ./...
