@@ -1,0 +1,28 @@
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: azurite
+    hostname: azurite
+    ports:
+      - "10002:10002" # Table service port
+    command: "azurite --tableHost 0.0.0.0"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:10002/devstoreaccount1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    hostname: redis
+    ports:
+      - "6379:6379" # Default Redis port
+    command: [ "redis-server", "--save", "" ] # Disable persistence
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
