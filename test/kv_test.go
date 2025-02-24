@@ -23,9 +23,16 @@ var sampleData = []*kv.Item{
 	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("g")), Value: []byte("G")},
 }
 
+providers := []string{"pebble", "azure"}
+
 // Setup function initializes a test database and ensures cleanup after the test.
 func setup(t *testing.T) kv.KV {
-	// Arrange
+
+	provider := "pebble"
+
+	switch provider {
+	case "pebble":
+
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
 
@@ -35,6 +42,42 @@ func setup(t *testing.T) kv.KV {
 		t.Fatalf("Failed to initialize Pebble DB: %v", err)
 	}
 
+
+	case "azure":
+
+					// default azurite configuration for local testing
+			// https://docs.microsoft.com/en-us/azure/storage/common/storage-use-azurite?tabs=windows
+			accountName := "devstoreaccount1"
+			accountKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+			endpoint := "http://127.0.0.1:10001/devstoreaccount1"
+
+			credential, err := azure.NewSharedKeyCredential(accountName, accountKey)
+			if err != nil {
+				panic(err)
+			}
+
+			options := &azure.TableProviderOptions{
+				Prefix:              "test",
+				Table: uuid.NewString(),
+				Endpoint:            endpoint,
+				SharedKeyCredential: credential,
+			}
+			return azure.NewTableProvider(options)
+
+	store, err := azure.NewTableProvider()
+	if err != nil {
+		t.Fatalf("Failed to initialize Pebble DB: %v", err)
+	}
+
+
+	}
+
+	// Cleanup after test
+	t.Cleanup(func() {
+		store.Close()
+	})
+
+
 	var batch []*kv.BatchItem
 	for _, item := range sampleData {
 		batch = append(batch, &kv.BatchItem{Op: kv.Put, PK: item.PK, Value: item.Value})
@@ -42,10 +85,6 @@ func setup(t *testing.T) kv.KV {
 	err = store.Batch(batch)
 	require.NoError(t, err)
 
-	// Cleanup after test
-	t.Cleanup(func() {
-		store.Close()
-	})
 
 	return store
 }

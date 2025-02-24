@@ -131,7 +131,7 @@ type Operation int
 const (
 	NoOp Operation = iota
 	Put
-	Remove
+	Delete
 )
 
 // QueryArgs defines the parameters for querying items.
@@ -181,3 +181,9 @@ const (
 	Ascending
 	Descending
 )
+
+func ReverseItems(items []*Item) {
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+}

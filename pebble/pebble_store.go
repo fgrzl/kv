@@ -87,11 +87,11 @@ func (s *store) Query(queryArgs kv.QueryArgs, sortOrder kv.SortDirection) ([]*kv
 	switch sortOrder {
 	case kv.Ascending:
 		if !isAscendingEnumerated {
-			reverseItems(slice)
+			kv.ReverseItems(slice)
 		}
 	case kv.Descending:
 		if isAscendingEnumerated {
-			reverseItems(slice)
+			kv.ReverseItems(slice)
 		}
 	}
 
@@ -224,7 +224,7 @@ func (s *store) Batch(items []*kv.BatchItem) error {
 			continue
 		case kv.Put:
 			err = batch.Set(key, item.Value, nil)
-		case kv.Remove:
+		case kv.Delete:
 			err = batch.Delete(key, nil)
 		}
 
@@ -269,7 +269,7 @@ func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSi
 				continue
 			case kv.Put:
 				opErr = batch.Set(key, item.Value, nil)
-			case kv.Remove:
+			case kv.Delete:
 				opErr = batch.Delete(key, nil)
 			}
 
@@ -353,11 +353,5 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 		return func(_ kv.PrimaryKey, _ kv.RangeKey) bool { return true },
 			func(iter *pebble.Iterator, _ *pebble.IterOptions) bool { return iter.First() },
 			func(iter *pebble.Iterator) bool { return iter.Next() }
-	}
-}
-
-func reverseItems(items []*kv.Item) {
-	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
-		items[i], items[j] = items[j], items[i]
 	}
 }

@@ -2,6 +2,7 @@ package kv
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
@@ -39,6 +40,24 @@ type EncodedKey []byte
 // IsEmpty checks if the EncodedKey is empty (no prefix and no key).
 func (e EncodedKey) IsEmpty() bool {
 	return len(e) == 0
+}
+
+// MarshalJSON encodes EncodedKey directly as a UTF-8 string for JSON. Preserves lexical sorting order.
+func (e EncodedKey) MarshalJSON() ([]byte, error) {
+	// Convert directly to a UTF-8 string
+	utf8Str := string(e)
+	return json.Marshal(utf8Str)
+}
+
+// UnmarshalJSON decodes a UTF-8 string from JSON into an EncodedKey. Preserves lexical sorting order.
+func (e *EncodedKey) UnmarshalJSON(data []byte) error {
+	var utf8Str string
+	if err := json.Unmarshal(data, &utf8Str); err != nil {
+		return fmt.Errorf("failed to unmarshal EncodedKey UTF-8 string: %w", err)
+	}
+
+	*e = []byte(utf8Str)
+	return nil
 }
 
 // Helper function to encode different value types directly into bytes.
