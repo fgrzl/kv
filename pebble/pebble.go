@@ -9,6 +9,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
+	"github.com/fgrzl/lexkey"
 )
 
 var _ kv.KV = (*store)(nil)
@@ -26,7 +27,7 @@ func NewPebbleStore(path string) (kv.KV, error) {
 	return &store{db: db}, nil
 }
 
-func (s *store) Get(pk kv.PrimaryKey) (*kv.Item, error) {
+func (s *store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
 	key := pk.Encode()
 	value, closer, err := s.db.Get(key)
 	if err != nil {
@@ -40,7 +41,7 @@ func (s *store) Get(pk kv.PrimaryKey) (*kv.Item, error) {
 	return &kv.Item{PK: pk, Value: append([]byte{}, value...)}, nil
 }
 
-func (s *store) GetBatch(keys ...kv.PrimaryKey) ([]*kv.Item, error) {
+func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	var results []*kv.Item
 
 	for _, pk := range keys {
@@ -105,7 +106,7 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
-		pk := kv.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
+		pk := lexkey.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
 		item, err := s.Get(pk)
 		if err != nil {
 			return enumerators.Error[*kv.Item](err)
@@ -119,7 +120,7 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 	// Define iteration behavior based on operator
 	satisfies, seek, move := getOperatorFunctions(args.Operator)
 
-	rangeKey := kv.RangeKey{
+	rangeKey := lexkey.RangeKey{
 		PartitionKey: args.PartitionKey,
 		StartRowKey:  args.StartRowKey,
 		EndRowKey:    args.EndRowKey,
@@ -151,7 +152,7 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 				return nil, false, nil
 			}
 
-			pk := kv.NewPrimaryKey(
+			pk := lexkey.NewPrimaryKey(
 				append([]byte{}, iter.Key()[:len(args.PartitionKey)]...),
 				append([]byte{}, iter.Key()[len(args.PartitionKey)+1:]...),
 			)
@@ -184,11 +185,11 @@ func (s *store) Put(item *kv.Item) error {
 	return s.db.Set(item.PK.Encode(), item.Value, pebble.Sync)
 }
 
-func (s *store) Remove(pk kv.PrimaryKey) error {
+func (s *store) Remove(pk lexkey.PrimaryKey) error {
 	return s.db.Delete(pk.Encode(), pebble.Sync)
 }
 
-func (s *store) RemoveBatch(keys ...kv.PrimaryKey) error {
+func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
@@ -201,12 +202,12 @@ func (s *store) RemoveBatch(keys ...kv.PrimaryKey) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (s *store) RemoveRange(rangeKey kv.RangeKey) error {
+func (s *store) RemoveRange(rangeKey lexkey.RangeKey) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
-	lower := kv.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.StartRowKey)
-	upper := kv.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.EndRowKey)
+	lower := lexkey.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.StartRowKey)
+	upper := lexkey.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.EndRowKey)
 
 	if err := batch.DeleteRange(lower.Encode(), upper.Encode(), nil); err != nil {
 		return err
@@ -307,42 +308,42 @@ func (s *store) Close() error {
 }
 
 func getOperatorFunctions(operator kv.QueryOperator) (
-	func(pk kv.PrimaryKey, rk kv.RangeKey) bool,
+	func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool,
 	func(iter *pebble.Iterator, opts *pebble.IterOptions) bool,
 	func(iter *pebble.Iterator) bool,
 ) {
 
 	switch operator {
 	case kv.GreaterThan:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.Compare(pk.RowKey, rk.StartRowKey) > 0
 			},
 			func(iter *pebble.Iterator, opts *pebble.IterOptions) bool { return iter.SeekGE(opts.LowerBound) },
 			func(iter *pebble.Iterator) bool { return iter.Next() }
 
 	case kv.GreaterThanOrEqual:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.Compare(pk.RowKey, rk.StartRowKey) >= 0
 			},
 			func(iter *pebble.Iterator, opts *pebble.IterOptions) bool { return iter.SeekGE(opts.LowerBound) },
 			func(iter *pebble.Iterator) bool { return iter.Next() }
 
 	case kv.LessThan:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.Compare(pk.RowKey, rk.EndRowKey) < 0
 			},
 			func(iter *pebble.Iterator, opts *pebble.IterOptions) bool { return iter.SeekLT(opts.UpperBound) },
 			func(iter *pebble.Iterator) bool { return iter.Prev() }
 
 	case kv.LessThanOrEqual:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.Compare(pk.RowKey, rk.EndRowKey) <= 0
 			},
 			func(iter *pebble.Iterator, opts *pebble.IterOptions) bool { return iter.SeekLT(opts.UpperBound) },
 			func(iter *pebble.Iterator) bool { return iter.Prev() }
 
 	case kv.Between:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.Compare(pk.RowKey, rk.StartRowKey) >= 0 &&
 					bytes.Compare(pk.RowKey, rk.EndRowKey) <= 0
 			},
@@ -350,14 +351,14 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 			func(iter *pebble.Iterator) bool { return iter.Next() }
 
 	case kv.StartsWith:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return bytes.HasPrefix(pk.RowKey, rk.StartRowKey)
 			},
 			func(iter *pebble.Iterator, opts *pebble.IterOptions) bool { return iter.SeekGE(opts.LowerBound) },
 			func(iter *pebble.Iterator) bool { return iter.Next() }
 
 	default:
-		return func(_ kv.PrimaryKey, _ kv.RangeKey) bool { return true },
+		return func(_ lexkey.PrimaryKey, _ lexkey.RangeKey) bool { return true },
 			func(iter *pebble.Iterator, _ *pebble.IterOptions) bool { return iter.First() },
 			func(iter *pebble.Iterator) bool { return iter.Next() }
 	}

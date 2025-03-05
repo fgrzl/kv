@@ -9,20 +9,21 @@ import (
 	"github.com/fgrzl/kv/azure"
 	"github.com/fgrzl/kv/pebble"
 	"github.com/fgrzl/kv/redis"
+	"github.com/fgrzl/lexkey"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var partitionKey = kv.EncodeKey("test")
+var partitionKey = lexkey.Encode("test")
 var sampleData = []*kv.Item{
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("a")), Value: []byte("A")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("b")), Value: []byte("B")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("c")), Value: []byte("C")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("d")), Value: []byte("D")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("e")), Value: []byte("E")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("f")), Value: []byte("F")},
-	{PK: kv.NewPrimaryKey(partitionKey, kv.EncodeKey("g")), Value: []byte("G")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("a")), Value: []byte("A")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("b")), Value: []byte("B")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("c")), Value: []byte("C")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("d")), Value: []byte("D")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("e")), Value: []byte("E")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("f")), Value: []byte("F")},
+	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("g")), Value: []byte("G")},
 }
 
 var providers = []string{"azure", "pebble", "redis"}
@@ -93,7 +94,7 @@ func TestPut(t *testing.T) {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
 			db := setup(t, provider)
-			item := &kv.Item{PK: kv.NewPrimaryKey(kv.EncodeKey("put-test"), kv.EncodeKey(1)), Value: []byte("hello world")}
+			item := &kv.Item{PK: lexkey.NewPrimaryKey(lexkey.Encode("put-test"), lexkey.Encode(1)), Value: []byte("hello world")}
 
 			// Act
 			err := db.Put(item)
@@ -140,7 +141,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 			db := setup(t, provider)
 			query := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				StartRowKey:  kv.EncodeKey("b"),
+				StartRowKey:  lexkey.Encode("b"),
 				Operator:     kv.Equal,
 			}
 
@@ -150,7 +151,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 1) // "b"
-			assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[0].PK.RowKey)
 		})
 	}
 }
@@ -162,7 +163,7 @@ func TestQuery_GreaterThan(t *testing.T) {
 			db := setup(t, provider)
 			args := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				StartRowKey:  kv.EncodeKey("c"),
+				StartRowKey:  lexkey.Encode("c"),
 				Operator:     kv.GreaterThan,
 			}
 
@@ -172,10 +173,10 @@ func TestQuery_GreaterThan(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 4) // "d", "e", "f", "g"
-			assert.Equal(t, kv.EncodeKey("d"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("e"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("f"), results[2].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("g"), results[3].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("e"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("f"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("g"), results[3].PK.RowKey)
 		})
 	}
 }
@@ -187,7 +188,7 @@ func TestQuery_GreaterThanEqual(t *testing.T) {
 			db := setup(t, provider)
 			args := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				StartRowKey:  kv.EncodeKey("c"),
+				StartRowKey:  lexkey.Encode("c"),
 				Operator:     kv.GreaterThanOrEqual,
 			}
 
@@ -197,11 +198,11 @@ func TestQuery_GreaterThanEqual(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 5) // "c", "d", "e", "f", "g"
-			assert.Equal(t, kv.EncodeKey("c"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("d"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("e"), results[2].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("f"), results[3].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("g"), results[4].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("e"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("f"), results[3].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("g"), results[4].PK.RowKey)
 		})
 	}
 }
@@ -213,7 +214,7 @@ func TestQuery_LessThan(t *testing.T) {
 			db := setup(t, provider)
 			args := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				EndRowKey:    kv.EncodeKey("d"),
+				EndRowKey:    lexkey.Encode("d"),
 				Operator:     kv.LessThan,
 			}
 
@@ -223,9 +224,9 @@ func TestQuery_LessThan(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 3) // "a", "b", "c"
-			assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("a"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
 		})
 	}
 }
@@ -237,7 +238,7 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 			db := setup(t, provider)
 			args := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				EndRowKey:    kv.EncodeKey("d"),
+				EndRowKey:    lexkey.Encode("d"),
 				Operator:     kv.LessThanOrEqual,
 			}
 
@@ -247,10 +248,10 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 4) // "a", "b", "c", "d"
-			assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("d"), results[3].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("a"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
 		})
 	}
 }
@@ -262,8 +263,8 @@ func TestQuery_Between(t *testing.T) {
 			db := setup(t, provider)
 			args := kv.QueryArgs{
 				PartitionKey: partitionKey,
-				StartRowKey:  kv.EncodeKey("b"),
-				EndRowKey:    kv.EncodeKey("d"),
+				StartRowKey:  lexkey.Encode("b"),
+				EndRowKey:    lexkey.Encode("d"),
 				Operator:     kv.Between,
 			}
 
@@ -273,9 +274,9 @@ func TestQuery_Between(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 3) // "b", "c", "d"
-			assert.Equal(t, kv.EncodeKey("b"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("c"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("d"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[2].PK.RowKey)
 		})
 	}
 }
@@ -296,13 +297,13 @@ func TestQuery_PartitionScan(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 7) // "a", "b", "c", "d", "e", "f", "g"
-			assert.Equal(t, kv.EncodeKey("a"), results[0].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("b"), results[1].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("c"), results[2].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("d"), results[3].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("e"), results[4].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("f"), results[5].PK.RowKey)
-			assert.Equal(t, kv.EncodeKey("g"), results[6].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("a"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("e"), results[4].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("f"), results[5].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("g"), results[6].PK.RowKey)
 		})
 	}
 }
