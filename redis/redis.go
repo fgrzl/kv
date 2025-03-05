@@ -9,6 +9,7 @@ import (
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
+	"github.com/fgrzl/lexkey"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -59,7 +60,7 @@ func (r *Store) Clear() {
 }
 
 // Get retrieves an item by its PrimaryKey.
-func (r *Store) Get(pk kv.PrimaryKey) (*kv.Item, error) {
+func (r *Store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
 	ctx := context.Background()
 	val, err := r.client.Get(ctx, pk.Encode().ToHexString()).Bytes()
 	if err == redis.Nil {
@@ -72,7 +73,7 @@ func (r *Store) Get(pk kv.PrimaryKey) (*kv.Item, error) {
 }
 
 // GetBatch retrieves multiple items concurrently.
-func (r *Store) GetBatch(keys ...kv.PrimaryKey) ([]*kv.Item, error) {
+func (r *Store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -116,7 +117,7 @@ func (r *Store) Put(item *kv.Item) error {
 }
 
 // Remove deletes an item by its PrimaryKey.
-func (r *Store) Remove(pk kv.PrimaryKey) error {
+func (r *Store) Remove(pk lexkey.PrimaryKey) error {
 	ctx := context.Background()
 	err := r.client.Del(ctx, pk.Encode().ToHexString()).Err()
 	if err != nil {
@@ -126,7 +127,7 @@ func (r *Store) Remove(pk kv.PrimaryKey) error {
 }
 
 // RemoveBatch deletes multiple items concurrently.
-func (r *Store) RemoveBatch(keys ...kv.PrimaryKey) error {
+func (r *Store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -143,7 +144,7 @@ func (r *Store) RemoveBatch(keys ...kv.PrimaryKey) error {
 }
 
 // RemoveRange removes items within a range (simulated with SCAN).
-func (r *Store) RemoveRange(rangeKey kv.RangeKey) error {
+func (r *Store) RemoveRange(rangeKey lexkey.RangeKey) error {
 	ctx := context.Background()
 	match := rangeKey.PartitionKey.ToHexString() + "*"
 
@@ -153,12 +154,12 @@ func (r *Store) RemoveRange(rangeKey kv.RangeKey) error {
 
 		key := iter.Val()
 
-		var encodedKey kv.EncodedKey
+		var encodedKey lexkey.LexKey
 		err := encodedKey.FromHexString(key)
 		if err != nil {
 			return err
 		}
-		pk := kv.NewPrimaryKey(
+		pk := lexkey.NewPrimaryKey(
 			encodedKey[:len(rangeKey.PartitionKey)],
 			encodedKey[len(rangeKey.PartitionKey)+1:],
 		)
@@ -202,7 +203,7 @@ func (r *Store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
-		pk := kv.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
+		pk := lexkey.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
 		item, err := r.Get(pk)
 		if err != nil {
 			return enumerators.Error[*kv.Item](err)
@@ -213,7 +214,7 @@ func (r *Store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 		return enumerators.Slice([]*kv.Item{item})
 	}
 
-	rangeKey := kv.RangeKey{
+	rangeKey := lexkey.RangeKey{
 		PartitionKey: args.PartitionKey,
 		StartRowKey:  args.StartRowKey,
 		EndRowKey:    args.EndRowKey,
@@ -231,12 +232,12 @@ func (r *Store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 				break
 			}
 			key := iter.Val()
-			var encodedKey kv.EncodedKey
+			var encodedKey lexkey.LexKey
 			err := encodedKey.FromHexString(key)
 			if err != nil {
 				return nil, false, err
 			}
-			pk := kv.NewPrimaryKey(
+			pk := lexkey.NewPrimaryKey(
 				encodedKey[:len(rangeKey.PartitionKey)],
 				encodedKey[len(rangeKey.PartitionKey)+1:],
 			)
@@ -322,41 +323,41 @@ func (r *Store) Close() error {
 	return nil
 }
 
-func getOperatorFunctions(operator kv.QueryOperator) func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+func getOperatorFunctions(operator kv.QueryOperator) func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 
 	switch operator {
 	case kv.GreaterThan:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.StartRowKey) > 0
 		}
 
 	case kv.GreaterThanOrEqual:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.StartRowKey) >= 0
 		}
 
 	case kv.LessThan:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.EndRowKey) < 0
 		}
 
 	case kv.LessThanOrEqual:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.EndRowKey) <= 0
 		}
 
 	case kv.Between:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.StartRowKey) >= 0 &&
 				bytes.Compare(pk.RowKey, rk.EndRowKey) <= 0
 		}
 
 	case kv.StartsWith:
-		return func(pk kv.PrimaryKey, rk kv.RangeKey) bool {
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.HasPrefix(pk.RowKey, rk.StartRowKey)
 		}
 
 	default:
-		return func(_ kv.PrimaryKey, _ kv.RangeKey) bool { return true }
+		return func(_ lexkey.PrimaryKey, _ lexkey.RangeKey) bool { return true }
 	}
 }
