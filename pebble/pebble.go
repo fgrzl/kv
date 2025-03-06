@@ -102,7 +102,6 @@ func (s *store) Query(queryArgs kv.QueryArgs, sortOrder kv.SortDirection) ([]*kv
 }
 
 func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
-	var counter int
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
@@ -146,8 +145,11 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 		return enumerators.Empty[*kv.Item]()
 	}
 
-	generator := enumerators.GenerateAndDispose(func() (*kv.Item, bool, error) {
-		for iter.Valid() {
+	var counter int
+
+	enumerator := enumerators.FilterMap(
+		Enumerator(iter, opts, seek, move),
+		func(kvp KeyValuePair) (*kv.Item, bool, error) {
 			if args.Limit > 0 && counter >= args.Limit {
 				return nil, false, nil
 			}
@@ -163,22 +165,12 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 					Value: append([]byte{}, iter.Value()...),
 				}
 				counter++
-				move(iter)
 				return item, true, nil
 			}
+			return nil, false, nil
+		})
 
-			move(iter)
-		}
-
-		if err := iter.Error(); err != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
-	}, func() {
-		iter.Close()
-	})
-
-	return generator
+	return enumerator
 }
 
 func (s *store) Put(item *kv.Item) error {

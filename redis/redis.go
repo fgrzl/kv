@@ -31,7 +31,7 @@ type RedisOptions struct {
 }
 
 // NewRedisStore initializes a new Redis provider.
-func NewRedisStore(options *RedisOptions) (*Store, error) {
+func NewRedisStore(options *RedisOptions) (kv.KV, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     options.Addr,
 		Password: options.Password,
