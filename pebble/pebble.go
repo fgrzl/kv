@@ -2,6 +2,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -27,7 +28,7 @@ func NewPebbleStore(path string) (kv.KV, error) {
 	return &store{db: db}, nil
 }
 
-func (s *store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
+func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
 	key := pk.Encode()
 	value, closer, err := s.db.Get(key)
 	if err != nil {
@@ -41,7 +42,7 @@ func (s *store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
 	return &kv.Item{PK: pk, Value: append([]byte{}, value...)}, nil
 }
 
-func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
+func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	var results []*kv.Item
 
 	for _, pk := range keys {
@@ -68,8 +69,8 @@ func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	return results, nil
 }
 
-func (s *store) Query(queryArgs kv.QueryArgs, sortOrder kv.SortDirection) ([]*kv.Item, error) {
-	enumerator := s.Enumerate(queryArgs)
+func (s *store) Query(ctx context.Context, queryArgs kv.QueryArgs, sortOrder kv.SortDirection) ([]*kv.Item, error) {
+	enumerator := s.Enumerate(ctx, queryArgs)
 	slice, err := enumerators.ToSlice(enumerator)
 	if err != nil {
 		return nil, err
@@ -101,12 +102,12 @@ func (s *store) Query(queryArgs kv.QueryArgs, sortOrder kv.SortDirection) ([]*kv
 	return slice, nil
 }
 
-func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
+func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
 		pk := lexkey.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
-		item, err := s.Get(pk)
+		item, err := s.Get(ctx, pk)
 		if err != nil {
 			return enumerators.Error[*kv.Item](err)
 		}
@@ -173,15 +174,15 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 	return enumerator
 }
 
-func (s *store) Put(item *kv.Item) error {
+func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	return s.db.Set(item.PK.Encode(), item.Value, pebble.Sync)
 }
 
-func (s *store) Remove(pk lexkey.PrimaryKey) error {
+func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	return s.db.Delete(pk.Encode(), pebble.Sync)
 }
 
-func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
+func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
@@ -194,7 +195,7 @@ func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (s *store) RemoveRange(rangeKey lexkey.RangeKey) error {
+func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
@@ -207,7 +208,7 @@ func (s *store) RemoveRange(rangeKey lexkey.RangeKey) error {
 	return batch.Commit(pebble.Sync)
 }
 
-func (s *store) Batch(items []*kv.BatchItem) error {
+func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	if len(items) == 0 {
 		return nil // No operations to perform
 	}
@@ -240,7 +241,7 @@ func (s *store) Batch(items []*kv.BatchItem) error {
 	return nil
 }
 
-func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
+func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
 	defer items.Dispose()
 
 	chunks := enumerators.ChunkByCount(items, chunkSize)

@@ -60,8 +60,8 @@ func (r *Store) Clear() {
 }
 
 // Get retrieves an item by its PrimaryKey.
-func (r *Store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
-	ctx := context.Background()
+func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
+
 	val, err := r.client.Get(ctx, pk.Encode().ToHexString()).Bytes()
 	if err == redis.Nil {
 		return nil, nil // Key not found
@@ -73,12 +73,11 @@ func (r *Store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
 }
 
 // GetBatch retrieves multiple items concurrently.
-func (r *Store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
+func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
 
-	ctx := context.Background()
 	pipe := r.client.Pipeline()
 	cmds := make([]*redis.StringCmd, len(keys))
 	for i, pk := range keys {
@@ -107,8 +106,8 @@ func (r *Store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 }
 
 // Put inserts or updates an item.
-func (r *Store) Put(item *kv.Item) error {
-	ctx := context.Background()
+func (r *Store) Put(ctx context.Context, item *kv.Item) error {
+
 	err := r.client.Set(ctx, item.PK.Encode().ToHexString(), item.Value, 0).Err()
 	if err != nil {
 		return fmt.Errorf("failed to put item: %w", err)
@@ -117,8 +116,8 @@ func (r *Store) Put(item *kv.Item) error {
 }
 
 // Remove deletes an item by its PrimaryKey.
-func (r *Store) Remove(pk lexkey.PrimaryKey) error {
-	ctx := context.Background()
+func (r *Store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
+
 	err := r.client.Del(ctx, pk.Encode().ToHexString()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to remove item: %w", err)
@@ -127,11 +126,11 @@ func (r *Store) Remove(pk lexkey.PrimaryKey) error {
 }
 
 // RemoveBatch deletes multiple items concurrently.
-func (r *Store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
+func (r *Store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	ctx := context.Background()
+
 	redisKeys := make([]string, len(keys))
 	for i, pk := range keys {
 		redisKeys[i] = pk.Encode().ToHexString()
@@ -144,8 +143,8 @@ func (r *Store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 }
 
 // RemoveRange removes items within a range (simulated with SCAN).
-func (r *Store) RemoveRange(rangeKey lexkey.RangeKey) error {
-	ctx := context.Background()
+func (r *Store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
+
 	match := rangeKey.PartitionKey.ToHexString() + "*"
 
 	iter := r.client.Scan(ctx, 0, match, 0).Iterator()
@@ -186,8 +185,8 @@ func (r *Store) RemoveRange(rangeKey lexkey.RangeKey) error {
 }
 
 // Query retrieves items matching the query args with specified sorting.
-func (r *Store) Query(args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
-	enumerator := r.Enumerate(args)
+func (r *Store) Query(ctx context.Context, args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
+	enumerator := r.Enumerate(ctx, args)
 	items, err := enumerators.ToSlice(enumerator)
 	if err != nil {
 		return nil, err
@@ -198,13 +197,12 @@ func (r *Store) Query(args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, err
 }
 
 // Enumerate returns an Enumerator for items matching the query args.
-func (r *Store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
-	ctx := context.Background()
+func (r *Store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
 		pk := lexkey.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
-		item, err := r.Get(pk)
+		item, err := r.Get(ctx, pk)
 		if err != nil {
 			return enumerators.Error[*kv.Item](err)
 		}
@@ -224,48 +222,48 @@ func (r *Store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 	match := rangeKey.PartitionKey.ToHexString() + "*"
 	iter := r.client.Scan(ctx, 0, match, 0).Iterator()
 
-	var totalCount int
+	enumerator := Enumerator(context.Background(), iter)
 
-	return enumerators.Generate(func() (*kv.Item, bool, error) {
-		for iter.Next(ctx) {
+	var totalCount int
+	items := enumerators.FilterMap(
+		enumerator,
+		func(key string) (*kv.Item, bool, error) {
 			if args.Limit > 0 && totalCount >= args.Limit {
-				break
+				return nil, false, nil
 			}
-			key := iter.Val()
+
 			var encodedKey lexkey.LexKey
 			err := encodedKey.FromHexString(key)
 			if err != nil {
 				return nil, false, err
 			}
+
 			pk := lexkey.NewPrimaryKey(
 				encodedKey[:len(rangeKey.PartitionKey)],
 				encodedKey[len(rangeKey.PartitionKey)+1:],
 			)
 
 			if !satifies(pk, rangeKey) {
-				continue
+				return nil, false, nil
 			}
 
-			item, err := r.Get(pk)
+			item, err := r.Get(ctx, pk)
 			if err != nil {
 				return nil, false, err
 			}
-			if item != nil {
-				totalCount++
-				return item, true, nil
-			}
-		}
-		return nil, false, iter.Err()
-	})
+
+			totalCount++
+			return item, true, nil
+		})
+
+	return items
 }
 
 // Batch performs a batch of operations (not atomic in Redis).
-func (r *Store) Batch(items []*kv.BatchItem) error {
+func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-
-	ctx := context.Background()
 	pipe := r.client.Pipeline()
 	for i, item := range items {
 		key := item.PK.Encode().ToHexString()
@@ -286,7 +284,7 @@ func (r *Store) Batch(items []*kv.BatchItem) error {
 }
 
 // BatchChunks processes batched items in chunks.
-func (r *Store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
+func (r *Store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
 	defer items.Dispose()
 	chunks := enumerators.ChunkByCount(items, chunkSize)
 	for chunks.MoveNext() {
@@ -302,7 +300,7 @@ func (r *Store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSi
 			}
 			batch = append(batch, item)
 		}
-		if err := r.Batch(batch); err != nil {
+		if err := r.Batch(ctx, batch); err != nil {
 			return err
 		}
 	}

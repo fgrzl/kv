@@ -77,10 +77,9 @@ type store struct {
 
 // Get retrieves an item from Azure Table Storage using the primary key.
 // Returns nil and no error if the item is not found.
-func (s *store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
+func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
 	partition := pk.PartitionKey.ToHexString()
 	row := pk.RowKey.ToHexString()
-	ctx := context.Background()
 
 	// Attempt to retrieve entity from Azure Table Storage
 	resp, err := s.client.GetEntity(ctx, partition, row, nil)
@@ -110,7 +109,7 @@ func (s *store) Get(pk lexkey.PrimaryKey) (*kv.Item, error) {
 }
 
 // GetBatch retrieves multiple items concurrently from Azure Table Storage.
-func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
+func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 	if len(keys) == 0 {
 		return []*kv.Item{}, nil
 	}
@@ -126,7 +125,7 @@ func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 		go func(key lexkey.PrimaryKey) {
 			defer wg.Done()
 
-			item, err := s.Get(key)
+			item, err := s.Get(ctx, key)
 			if err != nil {
 				// Capture the first error encountered
 				mu.Lock()
@@ -156,7 +155,7 @@ func (s *store) GetBatch(keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
 }
 
 // Put inserts or replaces an item in the Azure Table Storage.
-func (s *store) Put(item *kv.Item) error {
+func (s *store) Put(ctx context.Context, item *kv.Item) error {
 
 	entity := &Entity{
 		PartitionKey: item.PK.PartitionKey,
@@ -181,7 +180,7 @@ func (s *store) Put(item *kv.Item) error {
 
 // Remove deletes an item from Azure Table Storage using the primary key.
 // Returns nil if the item is not found.
-func (s *store) Remove(pk lexkey.PrimaryKey) error {
+func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	partition := pk.PartitionKey.ToHexString()
 	row := pk.RowKey.ToHexString()
 
@@ -197,7 +196,7 @@ func (s *store) Remove(pk lexkey.PrimaryKey) error {
 }
 
 // RemoveBatch implements kv.KV.
-func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
+func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -212,7 +211,7 @@ func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 		go func(key lexkey.PrimaryKey) {
 			defer wg.Done()
 
-			err := s.Remove(key)
+			err := s.Remove(ctx, key)
 			if err != nil {
 				// Capture the first error encountered
 				mu.Lock()
@@ -235,16 +234,16 @@ func (s *store) RemoveBatch(keys ...lexkey.PrimaryKey) error {
 }
 
 // RemoveRange implements kv.KV.
-func (s *store) RemoveRange(rangeKey lexkey.RangeKey) error {
+func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
 	panic("implement me")
 }
 
 // Query implements kv.KV.
-func (s *store) Query(queryArgs kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
+func (s *store) Query(ctx context.Context, queryArgs kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
 
 	// table storage is always sorted by PartitionKey and RowKey in ascending order
 
-	enumerator := s.Enumerate(queryArgs)
+	enumerator := s.Enumerate(ctx, queryArgs)
 	slice, err := enumerators.ToSlice(enumerator)
 	if err != nil {
 		return nil, err
@@ -260,13 +259,12 @@ func (s *store) Query(queryArgs kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item
 
 // Enumerate returns an Enumerator that yields items matching the query arguments.
 // It stops after yielding args.Limit items, or when all matching items are retrieved or an error occurs.
-func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
-	ctx := context.Background()
+func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 	// Shortcut for Equal operator
 	if args.Operator == kv.Equal {
 		pk := lexkey.PrimaryKey{PartitionKey: args.PartitionKey, RowKey: args.StartRowKey}
-		item, err := s.Get(pk)
+		item, err := s.Get(ctx, pk)
 		if err != nil {
 			return enumerators.Error[*kv.Item](err)
 		}
@@ -361,8 +359,8 @@ func (s *store) Enumerate(args kv.QueryArgs) enumerators.Enumerator[*kv.Item] {
 
 // Batch performs a transactional batch of operations on Azure Table Storage.
 // All items must share the same PartitionKey, and the batch size must not exceed 100.
-func (s *store) Batch(items []*kv.BatchItem) error {
-	ctx := context.Background()
+func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
+
 	if len(items) == 0 {
 		return nil
 	}
@@ -427,7 +425,7 @@ func (s *store) Batch(items []*kv.BatchItem) error {
 	return nil
 }
 
-func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
+func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
 	defer items.Dispose()
 
 	chunks := enumerators.ChunkByCount(items, chunkSize)
@@ -447,7 +445,7 @@ func (s *store) BatchChunks(items enumerators.Enumerator[*kv.BatchItem], chunkSi
 		}
 
 		// Commit the batch and close it immediately after
-		if err := s.Batch(batch); err != nil {
+		if err := s.Batch(ctx, batch); err != nil {
 			return err
 		}
 	}

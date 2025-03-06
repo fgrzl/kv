@@ -15,18 +15,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var partitionKey = lexkey.Encode("test")
-var sampleData = []*kv.Item{
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("a")), Value: []byte("A")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("b")), Value: []byte("B")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("c")), Value: []byte("C")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("d")), Value: []byte("D")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("e")), Value: []byte("E")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("f")), Value: []byte("F")},
-	{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("g")), Value: []byte("G")},
-}
+var (
+	providers = []string{"azure", "pebble", "redis"}
 
-var providers = []string{"azure", "pebble", "redis"}
+	partitionKey = lexkey.Encode("test")
+
+	sampleData = []*kv.Item{
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("a")), Value: []byte("A")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("b")), Value: []byte("B")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("c")), Value: []byte("C")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("d")), Value: []byte("D")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("e")), Value: []byte("E")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("f")), Value: []byte("F")},
+		{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("g")), Value: []byte("G")},
+	}
+)
 
 // Setup function initializes a test database and ensures cleanup after the test.
 func setup(t *testing.T, provider string) kv.KV {
@@ -83,7 +86,7 @@ func setup(t *testing.T, provider string) kv.KV {
 	for _, item := range sampleData {
 		batch = append(batch, &kv.BatchItem{Op: kv.Put, PK: item.PK, Value: item.Value})
 	}
-	err = store.Batch(batch)
+	err = store.Batch(t.Context(), batch)
 	require.NoError(t, err)
 
 	return store
@@ -97,12 +100,12 @@ func TestPut(t *testing.T) {
 			item := &kv.Item{PK: lexkey.NewPrimaryKey(lexkey.Encode("put-test"), lexkey.Encode(1)), Value: []byte("hello world")}
 
 			// Act
-			err := db.Put(item)
+			err := db.Put(t.Context(), item)
 
 			// Assert
 			assert.NoError(t, err)
 
-			result, errGet := db.Get(item.PK)
+			result, errGet := db.Get(t.Context(), item.PK)
 			assert.NoError(t, errGet)
 			assert.NotNil(t, result)
 			assert.Equal(t, item.PK, result.PK)
@@ -117,17 +120,17 @@ func TestRemove(t *testing.T) {
 			// Arrange
 			db := setup(t, provider)
 			item := sampleData[0]
-			result, err := db.Get(item.PK)
+			result, err := db.Get(t.Context(), item.PK)
 			require.NoError(t, err)
 			require.NotNil(t, result)
 
 			// Act
-			err = db.Remove(item.PK)
+			err = db.Remove(t.Context(), item.PK)
 
 			// Assert
 			assert.NoError(t, err)
 
-			result, err = db.Get(item.PK)
+			result, err = db.Get(t.Context(), item.PK)
 			assert.NoError(t, err)
 			assert.Nil(t, result)
 		})
@@ -146,7 +149,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(query, kv.Ascending)
+			results, err := db.Query(t.Context(), query, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -168,7 +171,7 @@ func TestQuery_GreaterThan(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -193,7 +196,7 @@ func TestQuery_GreaterThanEqual(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -219,7 +222,7 @@ func TestQuery_LessThan(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -243,7 +246,7 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -269,7 +272,7 @@ func TestQuery_Between(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -292,7 +295,7 @@ func TestQuery_PartitionScan(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)
@@ -320,7 +323,7 @@ func TestQuery_PartitionScanWithLimit(t *testing.T) {
 			}
 
 			// Act
-			results, err := db.Query(args, kv.Ascending)
+			results, err := db.Query(t.Context(), args, kv.Ascending)
 
 			// Assert
 			assert.NoError(t, err)

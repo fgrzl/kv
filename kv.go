@@ -2,6 +2,7 @@ package kv
 
 import (
 	"bytes"
+	"context"
 	"sort"
 
 	"github.com/fgrzl/enumerators"
@@ -88,15 +89,15 @@ func SortItems(items []*Item, direction SortDirection) {
 
 // KV defines the interface for a key-value store.
 type KV interface {
-	Get(pk lexkey.PrimaryKey) (*Item, error)
-	GetBatch(keys ...lexkey.PrimaryKey) ([]*Item, error)
-	Put(item *Item) error
-	Remove(pk lexkey.PrimaryKey) error
-	RemoveBatch(keys ...lexkey.PrimaryKey) error
-	RemoveRange(rangeKey lexkey.RangeKey) error
-	Query(queryArgs QueryArgs, sort SortDirection) ([]*Item, error)
-	Enumerate(queryArgs QueryArgs) enumerators.Enumerator[*Item]
-	Batch(items []*BatchItem) error
-	BatchChunks(items enumerators.Enumerator[*BatchItem], chunkSize int) error
+	Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
+	GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
+	Put(ctx context.Context, item *Item) error
+	Remove(ctx context.Context, pk lexkey.PrimaryKey) error
+	RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error
+	RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
+	Query(ctx context.Context, queryArgs QueryArgs, sort SortDirection) ([]*Item, error)
+	Enumerate(ctx context.Context, queryArgs QueryArgs) enumerators.Enumerator[*Item]
+	Batch(ctx context.Context, items []*BatchItem) error
+	BatchChunks(ctx context.Context, items enumerators.Enumerator[*BatchItem], chunkSize int) error
 	Close() error
 }
