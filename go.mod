@@ -3,7 +3,7 @@ module github.com/fgrzl/kv
 go 1.24.0
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.8.2
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.3.0
 	github.com/cockroachdb/pebble/v2 v2.0.2
