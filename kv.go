@@ -91,6 +91,7 @@ func SortItems(items []*Item, direction SortDirection) {
 type KV interface {
 	Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
 	GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
+	Insert(ctx context.Context, item *Item) error
 	Put(ctx context.Context, item *Item) error
 	Remove(ctx context.Context, pk lexkey.PrimaryKey) error
 	RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error
