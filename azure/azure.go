@@ -37,11 +37,11 @@ func NewAzureStore(options *TableProviderOptions) (kv.KV, error) {
 		client:  client,
 	}
 
-	return store, store.createTableIfNotExists()
+	return store, store.createTableIfNotExists(context.Background())
 }
 
-func (s *store) createTableIfNotExists() error {
-	_, err := s.client.CreateTable(context.Background(), nil)
+func (s *store) createTableIfNotExists(ctx context.Context) error {
+	_, err := s.client.CreateTable(ctx, nil)
 	if err == nil {
 		return nil // Table created successfully
 	}
@@ -154,6 +154,28 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 	return items, nil
 }
 
+func (s *store) Insert(ctx context.Context, item *kv.Item) error {
+	entity := &Entity{
+		PartitionKey: item.PK.PartitionKey,
+		RowKey:       item.PK.RowKey,
+		Value:        item.Value,
+	}
+
+	// Marshal the EDMEntity to JSON
+	entityJSON, err := json.Marshal(entity)
+	if err != nil {
+		return fmt.Errorf("failed to marshal entity to JSON: %w", err)
+	}
+
+	// Use the AddEntity method to insert the entity
+	_, err = s.client.AddEntity(ctx, entityJSON, &aztables.AddEntityOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to insert entity: %w", err)
+	}
+
+	return nil
+}
+
 // Put inserts or replaces an item in the Azure Table Storage.
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
 
@@ -170,7 +192,7 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	}
 
 	// Use the UpsertEntity method to insert or replace the entity
-	_, err = s.client.UpsertEntity(context.Background(), entityJSON, &aztables.UpsertEntityOptions{UpdateMode: aztables.UpdateModeReplace})
+	_, err = s.client.UpsertEntity(ctx, entityJSON, &aztables.UpsertEntityOptions{UpdateMode: aztables.UpdateModeReplace})
 	if err != nil {
 		return fmt.Errorf("failed to upsert entity: %w", err)
 	}
@@ -184,7 +206,7 @@ func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	partition := pk.PartitionKey.ToHexString()
 	row := pk.RowKey.ToHexString()
 
-	_, err := s.client.DeleteEntity(context.Background(), partition, row, nil)
+	_, err := s.client.DeleteEntity(ctx, partition, row, nil)
 	if err != nil {
 		var respErr *azcore.ResponseError
 		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {

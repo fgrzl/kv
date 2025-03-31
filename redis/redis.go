@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -103,6 +104,10 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 		results = append(results, item)
 	}
 	return results, nil
+}
+
+func (s *Store) Insert(ctx context.Context, item *kv.Item) error {
+	return errors.ErrUnsupported
 }
 
 // Put inserts or updates an item.

@@ -174,6 +174,10 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 	return enumerator
 }
 
+func (s *store) Insert(ctx context.Context, item *kv.Item) error {
+	return errors.ErrUnsupported
+}
+
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	return s.db.Set(item.PK.Encode(), item.Value, pebble.Sync)
 }
