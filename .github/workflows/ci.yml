@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   workflow_dispatch:
@@ -16,35 +16,31 @@ permissions:
   actions: write
 
 jobs:
-  build-and-test:
+  BuildAndTest:
+    name: Build and Test
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    
+
     steps:
-      - name: checkout
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: setup go
-        uses: actions/setup-go@v4
+      - name: Set Up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.23.5
+          go-version: 1.24.0
 
-      - name: setup test infrastructure
-        run: docker compose -f test/compose.yml up -d
-
-      - name: install dependencies
+      - name: Install Dependencies
         run: go mod tidy
-      
-      - name: build
+
+      - name: Build Project
         run: go build ./...
 
-      - name: test
+      - name: Test Infrastructure
+        run: docker compose -f test/compose.yml up -d
+
+      - name: Run Tests
         run: go test ./... -v -coverprofile=coverage.out
 
-      - name: cleanup history
-        uses: ./.github/actions/cleanup-history  
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          days_old: 1
-          page_count: 20
+      - name: Workflow Cleanup
+        uses: fgrzl/workflow-cleanup@v2
