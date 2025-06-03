@@ -62,7 +62,7 @@ func setup(t *testing.T, provider string) kv.KV {
 	case "pebble":
 		tempDir := t.TempDir()
 		dbPath := filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
-		store, err = pebble.NewPebbleStore(dbPath)
+		store, err = pebble.NewPebbleStore(dbPath, pebble.WithTableCacheShards(1))
 		require.NoError(t, err)
 
 	case "redis":

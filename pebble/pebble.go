@@ -13,15 +13,26 @@ import (
 	"github.com/fgrzl/lexkey"
 )
 
-var _ kv.KV = (*store)(nil)
+type Option func(*pebble.Options)
+
+func WithTableCacheShards(n int) Option {
+	return func(opts *pebble.Options) {
+		opts.Experimental.TableCacheShards = n
+	}
+}
 
 type store struct {
 	db       *pebble.DB
 	disposed sync.Once
 }
 
-func NewPebbleStore(path string) (kv.KV, error) {
-	db, err := pebble.Open(path, &pebble.Options{})
+func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
+	options := &pebble.Options{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	db, err := pebble.Open(path, options)
 	if err != nil {
 		return nil, err
 	}
