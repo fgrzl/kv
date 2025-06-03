@@ -16,12 +16,12 @@ jobs:
       - name: Checkout Full History
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  
+          fetch-depth: 0
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v3.2.1
         with:
-          versionSpec: '6.0.0'
+          versionSpec: "6.0.0"
 
       - name: Calculate Version
         id: version
@@ -37,6 +37,9 @@ jobs:
 
       - name: Build Project
         run: go build ./...
+
+      - name: Test Infrastructure
+        run: docker compose -f test/compose.yml up -d
 
       - name: Run Tests
         run: go test ./... -v -coverprofile=coverage.out
