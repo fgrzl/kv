@@ -6,7 +6,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.10.0
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.3.0
-	github.com/cockroachdb/pebble/v2 v2.0.4
+	github.com/cockroachdb/pebble/v2 v2.0.5
 	github.com/fgrzl/enumerators v0.1.0-alpha.20
 	github.com/fgrzl/lexkey v0.1.0-alpha.14
 	github.com/google/uuid v1.6.0
