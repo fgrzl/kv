@@ -68,8 +68,8 @@ func setup(t *testing.T, provider string) kv.KV {
 			redis.WithAddress("localhost:6379"),
 			redis.WithDatabase(0),
 		)
-		store.(*redis.Store).Clear()
 		require.NoError(t, err)
+		store.(*redis.Store).Clear()
 	}
 
 	// Cleanup after test
