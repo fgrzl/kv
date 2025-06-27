@@ -151,7 +151,7 @@ func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 }
 
 func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
-	panic("RemoveRange not implemented")
+	return errors.New("RemoveRange operation is not supported")
 }
 
 func (s *store) Query(ctx context.Context, args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
