@@ -84,7 +84,14 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 }
 
 func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
-	return errors.ErrUnsupported
+	ok, err := r.client.SetNX(ctx, item.PK.Encode().ToHexString(), item.Value, 0).Result()
+	if err != nil {
+		return fmt.Errorf("redis setnx failed: %w", err)
+	}
+	if !ok {
+		return errors.New("item already exists")
+	}
+	return nil
 }
 
 func (r *Store) Put(ctx context.Context, item *kv.Item) error {

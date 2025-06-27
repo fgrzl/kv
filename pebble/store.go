@@ -123,7 +123,24 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 }
 
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
-	return fmt.Errorf("Insert is not supported by Pebble store; use Put instead")
+	key := item.PK.Encode()
+
+	// First try to read the key
+	_, closer, err := s.db.Get(key)
+	if err == nil {
+		closer.Close()
+		return fmt.Errorf("key already exists: %v", item.PK)
+	}
+	if !errors.Is(err, pebble.ErrNotFound) {
+		return fmt.Errorf("insert check failed: %w", err)
+	}
+
+	// Race possible here – mitigate using Sync + manual retry logic if needed
+	err = s.db.Set(key, item.Value, pebble.Sync)
+	if err != nil {
+		return fmt.Errorf("insert failed: %w", err)
+	}
+	return nil
 }
 
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
