@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -39,8 +40,11 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create table client: %w", err)
 	}
-	store := &store{options: options, client: client}
-	return store, store.createTableIfNotExists(context.Background())
+	s := &store{options: options, client: client}
+	if err := s.createTableIfNotExists(context.Background()); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *store) createTableIfNotExists(ctx context.Context) error {
@@ -49,6 +53,7 @@ func (s *store) createTableIfNotExists(ctx context.Context) error {
 	if err == nil || (errors.As(err, &respErr) && respErr.ErrorCode == string(aztables.TableAlreadyExists)) {
 		return nil
 	}
+	slog.ErrorContext(ctx, "failed to create table", "err", err)
 	return fmt.Errorf("failed to create table: %w", err)
 }
 
@@ -59,11 +64,13 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get entity: %w", err)
+		slog.ErrorContext(ctx, "failed to get entity", "pk", pk, "err", err)
+		return nil, fmt.Errorf("get entity failed: %w", err)
 	}
 	var entity Entity
 	if err := json.Unmarshal(resp.Value, &entity); err != nil {
-		return nil, fmt.Errorf("failed to decode entity: %w", err)
+		slog.ErrorContext(ctx, "failed to decode entity", "err", err)
+		return nil, fmt.Errorf("decode failed: %w", err)
 	}
 	return &kv.Item{PK: pk, Value: entity.Value}, nil
 }
@@ -80,6 +87,7 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 			defer wg.Done()
 			item, err := s.Get(ctx, pk)
 			if err != nil {
+				slog.WarnContext(ctx, "get batch item failed", "pk", pk, "err", err)
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -95,10 +103,7 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 		}(key)
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return items, nil
+	return items, firstErr
 }
 
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
@@ -107,6 +112,13 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 		return fmt.Errorf("marshal failed: %w", err)
 	}
 	_, err = s.client.AddEntity(ctx, entityJSON, nil)
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) && respErr.StatusCode == http.StatusConflict {
+		return kv.ErrAlreadyExists
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "insert failed", "pk", item.PK, "err", err)
+	}
 	return err
 }
 
@@ -116,6 +128,9 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 		return fmt.Errorf("marshal failed: %w", err)
 	}
 	_, err = s.client.UpsertEntity(ctx, entityJSON, &aztables.UpsertEntityOptions{UpdateMode: aztables.UpdateModeReplace})
+	if err != nil {
+		slog.ErrorContext(ctx, "put failed", "pk", item.PK, "err", err)
+	}
 	return err
 }
 
@@ -124,6 +139,9 @@ func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	var respErr *azcore.ResponseError
 	if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
 		return nil
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "delete failed", "pk", pk, "err", err)
 	}
 	return err
 }
@@ -157,44 +175,36 @@ func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 		EndRowKey:    rangeKey.EndRowKey,
 		Operator:     kv.Between,
 	}
-
 	enum := s.Enumerate(ctx, args)
 	defer enum.Dispose()
 
 	batch := make([]*kv.BatchItem, 0, 100)
-
 	for enum.MoveNext() {
 		item, err := enum.Current()
 		if err != nil {
-			return fmt.Errorf("failed to read item during RemoveRange: %w", err)
+			slog.ErrorContext(ctx, "range enumerate failed", "err", err)
+			return err
 		}
-		batch = append(batch, &kv.BatchItem{
-			Op: kv.Delete,
-			PK: item.PK,
-		})
-
-		// Submit when batch reaches max size
+		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: item.PK})
 		if len(batch) == 100 {
 			if err := s.Batch(ctx, batch); err != nil {
-				return fmt.Errorf("failed to submit batch: %w", err)
+				slog.ErrorContext(ctx, "range batch delete failed", "err", err)
+				return err
 			}
 			batch = batch[:0]
 		}
 	}
-
-	// Submit final batch
 	if len(batch) > 0 {
 		if err := s.Batch(ctx, batch); err != nil {
-			return fmt.Errorf("failed to submit final batch: %w", err)
+			slog.ErrorContext(ctx, "final range batch delete failed", "err", err)
+			return err
 		}
 	}
-
 	return nil
 }
 
 func (s *store) Query(ctx context.Context, args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
-	enum := s.Enumerate(ctx, args)
-	items, err := enumerators.ToSlice(enum)
+	items, err := enumerators.ToSlice(s.Enumerate(ctx, args))
 	if err != nil {
 		return nil, err
 	}
@@ -231,34 +241,34 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 		return nil
 	}
 	if len(items) > 100 {
-		return fmt.Errorf("max batch size is 100")
+		return kv.ErrInvalidBatchOperation
 	}
 	pk := items[0].PK.PartitionKey
 	for i, item := range items[1:] {
 		if !bytes.Equal(item.PK.PartitionKey, pk) {
-			return fmt.Errorf("mismatched PartitionKey at index %d", i+1)
+			slog.ErrorContext(ctx, "batch with mixed partition keys", "index", i)
+			return kv.ErrInvalidBatchOperation
 		}
 	}
 
 	var ops []aztables.TransactionAction
 	for _, item := range items {
 		var typ aztables.TransactionType
-		var entity Entity
-
 		switch item.Op {
 		case kv.Put:
 			typ = aztables.TransactionTypeInsertReplace
-			entity = Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey, Value: item.Value}
 		case kv.Delete:
 			typ = aztables.TransactionTypeDelete
-			entity = Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey}
 		default:
-			continue
+			return kv.ErrInvalidBatchOperation
 		}
-
-		raw, err := json.Marshal(entity)
+		raw, err := json.Marshal(Entity{
+			PartitionKey: item.PK.PartitionKey,
+			RowKey:       item.PK.RowKey,
+			Value:        item.Value,
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("marshal failed: %w", err)
 		}
 		ops = append(ops, aztables.TransactionAction{ActionType: typ, Entity: raw})
 	}
@@ -272,8 +282,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 
 func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
 	defer items.Dispose()
-	chunks := enumerators.ChunkByCount(items, chunkSize)
-	for chunks.MoveNext() {
+	for chunks := enumerators.ChunkByCount(items, chunkSize); chunks.MoveNext(); {
 		chunk, err := chunks.Current()
 		if err != nil {
 			return err
@@ -307,28 +316,30 @@ func normalizeLimit(limit int) *int32 {
 }
 
 func buildFilter(args kv.QueryArgs) (*string, error) {
-	var filter string
 	pk := args.PartitionKey.ToHexString()
 	switch args.Operator {
 	case kv.Scan:
 		return nil, nil
 	case kv.Equal:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, args.StartRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, args.StartRowKey.ToHexString())), nil
 	case kv.GreaterThan:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey gt '%s'", pk, args.StartRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey gt '%s'", pk, args.StartRowKey.ToHexString())), nil
 	case kv.GreaterThanOrEqual:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, args.StartRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, args.StartRowKey.ToHexString())), nil
 	case kv.LessThan:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey lt '%s'", pk, args.EndRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey lt '%s'", pk, args.EndRowKey.ToHexString())), nil
 	case kv.LessThanOrEqual:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, args.EndRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, args.EndRowKey.ToHexString())), nil
 	case kv.Between:
-		filter = fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s' and RowKey le '%s'",
-			pk, args.StartRowKey.ToHexString(), args.EndRowKey.ToHexString())
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s' and RowKey le '%s'",
+			pk, args.StartRowKey.ToHexString(), args.EndRowKey.ToHexString())), nil
 	case kv.StartsWith:
 		return nil, fmt.Errorf("StartsWith is not natively supported")
 	default:
 		return nil, fmt.Errorf("unsupported operator: %v", args.Operator)
 	}
-	return &filter, nil
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }
