@@ -19,13 +19,11 @@ jobs:
           fetch-depth: 0
 
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3.2.1
-        with:
-          versionSpec: "6.0.0"
+        uses: gittools/actions/gitversion/setup@v4.0.0
 
       - name: Calculate Version
         id: version
-        uses: gittools/actions/gitversion/execute@v3.2.1
+        uses: gittools/actions/gitversion/execute@v4.0.0
 
       - name: Set Up Go
         uses: actions/setup-go@v5
@@ -35,11 +33,11 @@ jobs:
       - name: Install Dependencies
         run: go mod tidy
 
+      - name: Download Dependencies
+        run: go mod download
+
       - name: Build Project
         run: go build ./...
-
-      - name: Test Infrastructure
-        run: docker compose -f test/compose.yml up -d
 
       - name: Run Tests
         run: go test ./... -v -coverprofile=coverage.out

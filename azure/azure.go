@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
+	"github.com/fgrzl/collections/queue"
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
@@ -307,7 +308,7 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 		Filter: filter,
 	})
 
-	var queue *kv.Queue[*kv.Item]
+	var itemQueue *queue.Queue[*kv.Item]
 	var totalCount int // Track total items returned
 
 	return enumerators.Generate(func() (*kv.Item, bool, error) {
@@ -323,8 +324,8 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 			}
 
 			// Return items from queue if available
-			if queue != nil && !queue.IsEmpty() {
-				item, _ := queue.Dequeue()
+			if itemQueue != nil && !itemQueue.IsEmpty() {
+				item, _ := itemQueue.Dequeue()
 				totalCount++
 				return item, true, nil
 			}
@@ -346,16 +347,16 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 			}
 
 			// Initialize or reset queue
-			if queue == nil {
+			if itemQueue == nil {
 				// Adjust queue size based on remaining limit
 				remaining := args.Limit - totalCount
 				if args.Limit > 0 && remaining < len(resp.Entities) {
-					queue = kv.NewQueue[*kv.Item](remaining)
+					itemQueue = queue.NewQueue(queue.WithCapacity[*kv.Item](remaining))
 				} else {
-					queue = kv.NewQueue[*kv.Item](len(resp.Entities))
+					itemQueue = queue.NewQueue(queue.WithCapacity[*kv.Item](len(resp.Entities)))
 				}
 			} else {
-				queue.Reset()
+				itemQueue.Reset()
 			}
 
 			// Enqueue items up to the limit
@@ -367,7 +368,7 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 				if err := json.Unmarshal(entityBytes, &entity); err != nil {
 					return nil, false, fmt.Errorf("failed to decode entity: %w", err)
 				}
-				queue.Enqueue(&kv.Item{
+				itemQueue.Enqueue(&kv.Item{
 					PK: lexkey.PrimaryKey{
 						PartitionKey: entity.PartitionKey,
 						RowKey:       entity.RowKey,

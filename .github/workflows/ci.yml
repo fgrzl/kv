@@ -33,11 +33,11 @@ jobs:
       - name: Install Dependencies
         run: go mod tidy
 
+      - name: Download Dependencies
+        run: go mod download
+
       - name: Build Project
         run: go build ./...
-
-      - name: Test Infrastructure
-        run: docker compose -f test/compose.yml up -d
 
       - name: Run Tests
         run: go test ./... -v -coverprofile=coverage.out
