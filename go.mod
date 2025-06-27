@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.4.0
 	github.com/cockroachdb/pebble/v2 v2.0.6
 	github.com/fgrzl/enumerators v0.1.0-alpha.20
-	github.com/fgrzl/lexkey v0.1.0-alpha.22
+	github.com/fgrzl/lexkey v0.1.0-alpha.23
 	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.11.0
 	github.com/stretchr/testify v1.10.0
@@ -29,7 +29,6 @@ require (
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/fgrzl/collections v0.1.0-alpha.6
 	github.com/getsentry/sentry-go v0.34.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect

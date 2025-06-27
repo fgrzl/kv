@@ -49,14 +49,12 @@ func setup(t *testing.T, provider string) kv.KV {
 			panic(err)
 		}
 
-		options := &azure.TableProviderOptions{
-			Prefix:              "test",
-			Table:               uuid.NewString(),
-			Endpoint:            endpoint,
-			SharedKeyCredential: credential,
-		}
-
-		store, err = azure.NewAzureStore(options)
+		store, err = azure.NewAzureStore(
+			azure.WithPrefix("test"),
+			azure.WithTable(uuid.NewString()),
+			azure.WithEndpoint(endpoint),
+			azure.WithSharedKey(credential),
+		)
 		require.NoError(t, err)
 
 	case "pebble":
@@ -66,12 +64,10 @@ func setup(t *testing.T, provider string) kv.KV {
 		require.NoError(t, err)
 
 	case "redis":
-		// Default Redis configuration for local testing
-		options := &redis.RedisOptions{
-			Addr: "localhost:6379",
-			DB:   0,
-		}
-		store, err = redis.NewRedisStore(options)
+		store, err = redis.NewRedisStore(
+			redis.WithAddress("localhost:6379"),
+			redis.WithDatabase(0),
+		)
 		store.(*redis.Store).Clear()
 		require.NoError(t, err)
 	}
