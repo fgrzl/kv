@@ -1,20 +1,3 @@
-name: CI
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - '**'
-  pull_request:
-    branches:
-      - main
-      - develop
-
-permissions:
-  contents: read
-  packages: write
-  actions: write
-
 jobs:
   BuildAndTest:
     name: Build and Test
@@ -35,6 +18,9 @@ jobs:
 
       - name: Download Dependencies
         run: go mod download
+
+      - name: Start Test Infrastructure
+        run: docker compose -f test/compose.yml up -d
 
       - name: Build Project
         run: go build ./...
