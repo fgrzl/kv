@@ -18,7 +18,7 @@ type enumerator struct {
 }
 
 // NewPebbleEnumerator creates a new enumerator for a given Pebble iterator.
-func Enumerator(ctx context.Context, iter *redis.ScanIterator) *enumerator {
+func RedisEnumerator(ctx context.Context, iter *redis.ScanIterator) *enumerator {
 	return &enumerator{
 		ctx:  ctx,
 		iter: iter,

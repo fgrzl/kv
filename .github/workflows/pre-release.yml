@@ -11,12 +11,18 @@ jobs:
   TagAndPublish:
     name: Tag and Notify Go Proxy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout Full History
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.0
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v4.0.0
@@ -25,16 +31,14 @@ jobs:
         id: version
         uses: gittools/actions/gitversion/execute@v4.0.0
 
-      - name: Set Up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 1.24.0
-
       - name: Install Dependencies
         run: go mod tidy
 
       - name: Download Dependencies
         run: go mod download
+
+      - name: Start Test Infrastructure
+        run: docker compose -f test/compose.yml up -d
 
       - name: Build Project
         run: go build ./...

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - '**'
+      - "**"
   pull_request:
     branches:
       - main
@@ -35,6 +35,9 @@ jobs:
 
       - name: Download Dependencies
         run: go mod download
+
+      - name: Start Test Infrastructure
+        run: docker compose -f test/compose.yml up -d
 
       - name: Build Project
         run: go build ./...

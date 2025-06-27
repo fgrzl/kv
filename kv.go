@@ -3,6 +3,7 @@ package kv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sort"
 
 	"github.com/fgrzl/enumerators"
@@ -52,6 +53,14 @@ const (
 	LessThanOrEqual
 	Between
 	StartsWith
+)
+
+var (
+	ErrAlreadyExists         = errors.New("item already exists")
+	ErrInvalidBatchOperation = errors.New("invalid batch operation")
+	ErrInvalidLexKey         = errors.New("invalid encoded lexkey")
+	ErrBackendUnavailable    = errors.New("backend unavailable")
+	ErrBackendExecution      = errors.New("backend execution failed")
 )
 
 // SortDirection defines the sorting order for query results.
