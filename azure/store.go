@@ -151,7 +151,45 @@ func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 }
 
 func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
-	return errors.New("RemoveRange operation is not supported")
+	args := kv.QueryArgs{
+		PartitionKey: rangeKey.PartitionKey,
+		StartRowKey:  rangeKey.StartRowKey,
+		EndRowKey:    rangeKey.EndRowKey,
+		Operator:     kv.Between,
+	}
+
+	enum := s.Enumerate(ctx, args)
+	defer enum.Dispose()
+
+	batch := make([]*kv.BatchItem, 0, 100)
+
+	for enum.MoveNext() {
+		item, err := enum.Current()
+		if err != nil {
+			return fmt.Errorf("failed to read item during RemoveRange: %w", err)
+		}
+		batch = append(batch, &kv.BatchItem{
+			Op: kv.Delete,
+			PK: item.PK,
+		})
+
+		// Submit when batch reaches max size
+		if len(batch) == 100 {
+			if err := s.Batch(ctx, batch); err != nil {
+				return fmt.Errorf("failed to submit batch: %w", err)
+			}
+			batch = batch[:0]
+		}
+	}
+
+	// Submit final batch
+	if len(batch) > 0 {
+		if err := s.Batch(ctx, batch); err != nil {
+			return fmt.Errorf("failed to submit final batch: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *store) Query(ctx context.Context, args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
