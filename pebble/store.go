@@ -19,10 +19,7 @@ type store struct {
 }
 
 func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
-	options := &pebble.Options{}
-	for _, opt := range opts {
-		opt(options)
-	}
+	options := NewOptions(opts...) // returns *pebble.Options
 	db, err := pebble.Open(path, options)
 	if err != nil {
 		return nil, err
