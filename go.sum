@@ -49,8 +49,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
-github.com/fgrzl/enumerators v0.1.0-alpha.20 h1:pppcISda1SBUQ8xgN3LCybTRB9REavRCfSOoyyZrh2k=
-github.com/fgrzl/enumerators v0.1.0-alpha.20/go.mod h1:gqcOfcKqWMh6z3TeDXwDvPD3YZ/BKSPuYH6FLCIo3RE=
+github.com/fgrzl/enumerators v0.1.0-alpha.33 h1:hVXxnw0m4ydkMlqlQ6DLi3HzUdUGUaBOjnTB0S3W9zw=
+github.com/fgrzl/enumerators v0.1.0-alpha.33/go.mod h1:JNWjAjpkIJ1GJ+S80HOq81DJGjvb2xIXacAeiFGS6X0=
 github.com/fgrzl/lexkey v0.1.0-alpha.23 h1:bXEpqowyFFJuOLsqBZDEvPfdm5C1ZrYLOE93MIU39GU=
 github.com/fgrzl/lexkey v0.1.0-alpha.23/go.mod h1:DfrNX28YpZvrxyDm+jYQ6Jv2pJbZxQoMS1dcBSwBv58=
 github.com/getsentry/sentry-go v0.34.0 h1:1FCHBVp8TfSc8L10zqSwXUZNiOSF+10qw4czjarTiY4=
