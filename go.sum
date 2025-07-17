@@ -51,10 +51,8 @@ github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/r
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
 github.com/fgrzl/enumerators v0.1.0-alpha.33 h1:hVXxnw0m4ydkMlqlQ6DLi3HzUdUGUaBOjnTB0S3W9zw=
 github.com/fgrzl/enumerators v0.1.0-alpha.33/go.mod h1:JNWjAjpkIJ1GJ+S80HOq81DJGjvb2xIXacAeiFGS6X0=
-github.com/fgrzl/lexkey v0.1.0-alpha.29 h1:JxbmdXfFeNhaqSXSxjz1WmEyQbAsq9iTQ/TNGTKxKKI=
-github.com/fgrzl/lexkey v0.1.0-alpha.29/go.mod h1:DfrNX28YpZvrxyDm+jYQ6Jv2pJbZxQoMS1dcBSwBv58=
-github.com/fgrzl/lexkey v0.1.0-alpha.30 h1:BR/LBk8pyDedUfhIS0V86p93z3EpxBynvCY5sZ5Ma9E=
-github.com/fgrzl/lexkey v0.1.0-alpha.30/go.mod h1:DfrNX28YpZvrxyDm+jYQ6Jv2pJbZxQoMS1dcBSwBv58=
+github.com/fgrzl/lexkey v0.1.0-alpha.32 h1:8UMk/VnYRl4ZRFAeJLcCdrL5VpGikiDcWAMnzzCSpOU=
+github.com/fgrzl/lexkey v0.1.0-alpha.32/go.mod h1:DfrNX28YpZvrxyDm+jYQ6Jv2pJbZxQoMS1dcBSwBv58=
 github.com/getsentry/sentry-go v0.34.1 h1:HSjc1C/OsnZttohEPrrqKH42Iud0HuLCXpv8cU1pWcw=
 github.com/getsentry/sentry-go v0.34.1/go.mod h1:C55omcY9ChRQIUcVcGcs+Zdy4ZpQGvNJ7JYHIoSWOtE=
 github.com/ghemawat/stream v0.0.0-20171120220530-696b145b53b9 h1:r5GgOLGbza2wVHRzK7aAj6lWZjfbAwiu/RDCVOKjRyM=
