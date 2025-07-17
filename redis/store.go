@@ -36,7 +36,7 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		slog.ErrorContext(ctx, "redis ping failed", "err", err)
-		return nil, fmt.Errorf("%w: %v", kv.ErrBackendUnavailable, err)
+		return nil, err
 	}
 
 	slog.DebugContext(ctx, "redis client initialized", "addr", cfg.Addr, "db", cfg.DB)
@@ -55,7 +55,7 @@ func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "redis get failed", "key", key, "err", err)
-		return nil, fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return nil, err
 	}
 	return &kv.Item{PK: pk, Value: val}, nil
 }
@@ -72,7 +72,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
 		slog.ErrorContext(ctx, "redis pipeline get failed", "err", err)
-		return nil, fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return nil, err
 	}
 
 	results := make([]*kv.Item, 0, len(keys))
@@ -83,7 +83,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 		}
 		if err != nil {
 			slog.ErrorContext(ctx, "redis get error", "index", i, "err", err)
-			return nil, fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+			return nil, err
 		}
 		results = append(results, &kv.Item{PK: keys[i], Value: val})
 	}
@@ -95,7 +95,7 @@ func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
 	ok, err := r.client.SetNX(ctx, key, item.Value, 0).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis insert failed", "key", key, "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return err
 	}
 	if !ok {
 		return kv.ErrAlreadyExists
@@ -108,7 +108,7 @@ func (r *Store) Put(ctx context.Context, item *kv.Item) error {
 	err := r.client.Set(ctx, key, item.Value, 0).Err()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis put failed", "key", key, "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return err
 	}
 	return nil
 }
@@ -118,7 +118,7 @@ func (r *Store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	err := r.client.Del(ctx, key).Err()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis delete failed", "key", key, "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return err
 	}
 	return nil
 }
@@ -133,7 +133,7 @@ func (r *Store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 	}
 	if err := r.client.Del(ctx, strKeys...).Err(); err != nil {
 		slog.ErrorContext(ctx, "redis batch delete failed", "count", len(keys), "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return err
 	}
 	return nil
 }
@@ -158,12 +158,12 @@ func (r *Store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 	}
 	if err := iter.Err(); err != nil {
 		slog.ErrorContext(ctx, "redis scan failed", "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return err
 	}
 	if len(keys) > 0 {
 		if err := r.client.Del(ctx, keys...).Err(); err != nil {
 			slog.ErrorContext(ctx, "redis delete range failed", "count", len(keys), "err", err)
-			return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+			return err
 		}
 	}
 	return nil
@@ -252,25 +252,22 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 }
 
 func (r *Store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
-	defer items.Dispose()
-	for chunks := enumerators.ChunkByCount(items, chunkSize); chunks.MoveNext(); {
-		chunk, err := chunks.Current()
-		if err != nil {
-			return err
-		}
-		var batch []*kv.BatchItem
-		for chunk.MoveNext() {
-			item, err := chunk.Current()
-			if err != nil {
+	return enumerators.ForEach(
+		enumerators.ChunkByCount(items, chunkSize),
+		func(chunk enumerators.Enumerator[*kv.BatchItem]) error {
+			var batch []*kv.BatchItem
+			if err := enumerators.ForEach(chunk, func(item *kv.BatchItem) error {
+				batch = append(batch, item)
+				return nil
+			}); err != nil {
 				return err
 			}
-			batch = append(batch, item)
-		}
-		if err := r.Batch(ctx, batch); err != nil {
-			return err
-		}
-	}
-	return nil
+			if len(batch) > 0 {
+				return r.Batch(ctx, batch)
+			}
+			return nil
+		},
+	)
 }
 
 func (r *Store) Close() error {

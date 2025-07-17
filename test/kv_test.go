@@ -133,7 +133,7 @@ func TestRemove(t *testing.T) {
 	}
 }
 
-func TestQuery_ExactMatch(t *testing.T) {
+func TestQueryExactMatch(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -155,7 +155,7 @@ func TestQuery_ExactMatch(t *testing.T) {
 	}
 }
 
-func TestQuery_GreaterThan(t *testing.T) {
+func TestQueryGreaterThan(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -180,7 +180,7 @@ func TestQuery_GreaterThan(t *testing.T) {
 	}
 }
 
-func TestQuery_GreaterThanEqual(t *testing.T) {
+func TestQueryGreaterThanEqual(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -206,7 +206,7 @@ func TestQuery_GreaterThanEqual(t *testing.T) {
 	}
 }
 
-func TestQuery_LessThan(t *testing.T) {
+func TestQueryLessThan(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -230,7 +230,7 @@ func TestQuery_LessThan(t *testing.T) {
 	}
 }
 
-func TestQuery_LessThanOrEqual(t *testing.T) {
+func TestQueryLessThanOrEqual(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -255,7 +255,7 @@ func TestQuery_LessThanOrEqual(t *testing.T) {
 	}
 }
 
-func TestQuery_Between(t *testing.T) {
+func TestQueryBetween(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -280,7 +280,7 @@ func TestQuery_Between(t *testing.T) {
 	}
 }
 
-func TestQuery_PartitionScan(t *testing.T) {
+func TestQueryPartitionScan(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange
@@ -307,7 +307,7 @@ func TestQuery_PartitionScan(t *testing.T) {
 	}
 }
 
-func TestQuery_PartitionScanWithLimit(t *testing.T) {
+func TestQueryPartitionScanWithLimit(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			// Arrange

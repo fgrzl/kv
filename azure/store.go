@@ -18,9 +18,8 @@ import (
 )
 
 type store struct {
-	options  *TableProviderOptions
-	client   *aztables.Client
-	disposed sync.Once
+	options *TableProviderOptions
+	client  *aztables.Client
 }
 
 var _ kv.KV = (*store)(nil)
@@ -109,7 +108,7 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	entityJSON, err := json.Marshal(Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey, Value: item.Value})
 	if err != nil {
-		return fmt.Errorf("marshal failed: %w", err)
+		return err
 	}
 	_, err = s.client.AddEntity(ctx, entityJSON, nil)
 	var respErr *azcore.ResponseError
@@ -125,7 +124,7 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	entityJSON, err := json.Marshal(Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey, Value: item.Value})
 	if err != nil {
-		return fmt.Errorf("marshal failed: %w", err)
+		return err
 	}
 	_, err = s.client.UpsertEntity(ctx, entityJSON, &aztables.UpsertEntityOptions{UpdateMode: aztables.UpdateModeReplace})
 	if err != nil {
@@ -179,28 +178,29 @@ func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 	defer enum.Dispose()
 
 	batch := make([]*kv.BatchItem, 0, 100)
-	for enum.MoveNext() {
-		item, err := enum.Current()
-		if err != nil {
-			slog.ErrorContext(ctx, "range enumerate failed", "err", err)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := s.Batch(ctx, batch); err != nil {
+			slog.ErrorContext(ctx, "range batch delete failed", "err", err)
 			return err
 		}
+		batch = batch[:0]
+		return nil
+	}
+
+	err := enumerators.ForEach(enum, func(item *kv.Item) error {
 		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: item.PK})
 		if len(batch) == 100 {
-			if err := s.Batch(ctx, batch); err != nil {
-				slog.ErrorContext(ctx, "range batch delete failed", "err", err)
-				return err
-			}
-			batch = batch[:0]
+			return flush()
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	if len(batch) > 0 {
-		if err := s.Batch(ctx, batch); err != nil {
-			slog.ErrorContext(ctx, "final range batch delete failed", "err", err)
-			return err
-		}
-	}
-	return nil
+	return flush()
 }
 
 func (s *store) Query(ctx context.Context, args kv.QueryArgs, sort kv.SortDirection) ([]*kv.Item, error) {
@@ -281,29 +281,26 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 }
 
 func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {
-	defer items.Dispose()
-	for chunks := enumerators.ChunkByCount(items, chunkSize); chunks.MoveNext(); {
-		chunk, err := chunks.Current()
-		if err != nil {
-			return err
-		}
-		var batch []*kv.BatchItem
-		for chunk.MoveNext() {
-			item, err := chunk.Current()
+	return enumerators.ForEach(
+		enumerators.ChunkByCount(items, chunkSize),
+		func(chunk enumerators.Enumerator[*kv.BatchItem]) error {
+			var batch []*kv.BatchItem
+			err := enumerators.ForEach(chunk, func(item *kv.BatchItem) error {
+				batch = append(batch, item)
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			batch = append(batch, item)
-		}
-		if err := s.Batch(ctx, batch); err != nil {
-			return err
-		}
-	}
-	return nil
+			if len(batch) > 0 {
+				return s.Batch(ctx, batch)
+			}
+			return nil
+		},
+	)
 }
 
 func (s *store) Close() error {
-	s.disposed.Do(func() {})
 	return nil
 }
 
