@@ -3,19 +3,34 @@
 
 # KV
 
-This library provides a simple and flexible **key-value store abstraction** with support for CRUD operations, batch writes, range queries, and efficient enumeration.
+A simple and flexible **key-value store abstraction** for Go that provides a unified interface for multiple backend storage systems. This library supports CRUD operations, batch writes, range queries, and efficient enumeration across different storage backends.
 
-The KV interface allows you to interact with different backends (e.g., Pebble, etc) seamlessly.
+The KV interface allows you to seamlessly switch between storage backends including **Azure Tables**, **Pebble DB**, **Redis**, and **Merkle Trees** without changing your application code.
+
+---
+
+## 🏗️ **Architecture**
+
+The library follows an interface-based design pattern with a core `KV` interface that abstracts common key-value operations. Each backend implementation provides specific optimizations while maintaining the same consistent API.
+
+**Supported Backends:**
+- **Azure Tables** - Cloud-native NoSQL storage
+- **Pebble** - High-performance embedded key-value store (RocksDB successor)
+- **Redis** - In-memory data structure store
+- **Merkle Trees** - Cryptographically verifiable data structures
 
 ---
 
 ## 🚀 **Features**
 
-- 🔑 Basic CRUD operations (`Get`, `Put`, `Remove`)
-- ⚡ Batch operations with deduplication support
-- 🔍 Range and prefix queries
-- 🔄 Efficient item enumeration
-- 🛠️ Support for custom query operators (e.g., `GreaterThan`, `Between`, `StartsWith`)
+- 🔑 **CRUD Operations** - `Get`, `Put`, `Insert`, `Remove` with full type safety
+- ⚡ **Batch Operations** - Efficient bulk writes with deduplication support
+- 🔍 **Advanced Queries** - Range queries, prefix searches, and custom operators
+- 📊 **Query Operators** - `Equal`, `GreaterThan`, `Between`, `StartsWith`, and more
+- 🔄 **Enumeration** - Memory-efficient iteration over large datasets
+- 🎯 **Pluggable Backends** - Easy switching between storage systems
+- 🧪 **Test-Friendly** - Built-in test utilities and Docker setup
+- 📈 **Performance** - Optimized for high-throughput scenarios
 
 ---
 
@@ -23,3 +38,331 @@ The KV interface allows you to interact with different backends (e.g., Pebble, e
 
 ```bash
 go get github.com/fgrzl/kv
+```
+
+**Requirements:**
+- Go 1.24.0 or later
+- Docker (for running tests with backend services)
+
+---
+
+## 🚀 **Quick Start**
+
+### Basic Usage
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/fgrzl/kv"
+    "github.com/fgrzl/kv/pebble"
+    "github.com/fgrzl/lexkey"
+)
+
+func main() {
+    // Create a Pebble store
+    store, err := pebble.NewPebbleStore("./data", pebble.WithTableCacheShards(1))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer store.Close()
+
+    // Create a primary key
+    pk := lexkey.NewPrimaryKey(
+        lexkey.Encode("users"),    // partition key
+        lexkey.Encode("john123"),  // row key
+    )
+
+    // Put an item
+    item := &kv.Item{
+        PK:    pk,
+        Value: []byte(`{"name": "John Doe", "email": "john@example.com"}`),
+    }
+    
+    err = store.Put(context.Background(), item)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Get the item back
+    retrieved, err := store.Get(context.Background(), pk)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    if retrieved != nil {
+        fmt.Printf("Retrieved: %s\n", string(retrieved.Value))
+    }
+}
+```
+
+### Backend-Specific Examples
+
+#### Azure Tables
+
+```go
+import (
+    "github.com/fgrzl/kv/azure"
+)
+
+credential, err := azure.NewSharedKeyCredential(accountName, accountKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+store, err := azure.NewAzureStore(
+    azure.WithTable("mytable"),
+    azure.WithEndpoint("https://myaccount.table.core.windows.net/"),
+    azure.WithSharedKey(credential),
+)
+```
+
+#### Redis
+
+```go
+import (
+    "github.com/fgrzl/kv/redis"
+)
+
+store, err := redis.NewRedisStore(
+    redis.WithAddress("localhost:6379"),
+    redis.WithDatabase(0),
+    redis.WithPrefix("myapp:"),
+)
+```
+
+#### Pebble (Embedded)
+
+```go
+import (
+    "github.com/fgrzl/kv/pebble"
+)
+
+store, err := pebble.NewPebbleStore(
+    "./mydb.pebble",
+    pebble.WithTableCacheShards(4),
+)
+```
+
+### Advanced Operations
+
+#### Batch Operations
+
+```go
+batch := []*kv.BatchItem{
+    {Op: kv.Put, PK: pk1, Value: []byte("value1")},
+    {Op: kv.Put, PK: pk2, Value: []byte("value2")},
+    {Op: kv.Delete, PK: pk3},
+}
+
+err := store.Batch(context.Background(), batch)
+```
+
+#### Range Queries
+
+```go
+queryArgs := kv.QueryArgs{
+    PartitionKey: lexkey.Encode("users"),
+    StartRowKey:  lexkey.Encode("a"),
+    EndRowKey:    lexkey.Encode("m"),
+    Operator:     kv.Between,
+    Limit:        100,
+}
+
+items, err := store.Query(context.Background(), queryArgs, kv.Ascending)
+```
+
+#### Enumeration
+
+```go
+enumerator := store.Enumerate(context.Background(), queryArgs)
+defer enumerator.Close()
+
+for enumerator.Next() {
+    item := enumerator.Current()
+    // Process item
+    fmt.Printf("Key: %s, Value: %s\n", 
+        string(item.PK.RowKey), string(item.Value))
+}
+
+if enumerator.Error() != nil {
+    log.Fatal(enumerator.Error())
+}
+```
+
+---
+
+## 🛠️ **Development Setup**
+
+### Prerequisites
+
+1. **Install Go 1.24.0+**
+   ```bash
+   go version  # Should show 1.24.0 or later
+   ```
+
+2. **Install Docker** (for running test infrastructure)
+   ```bash
+   docker --version
+   docker compose --version
+   ```
+
+### Clone and Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/fgrzl/kv.git
+cd kv
+
+# Download dependencies
+go mod download
+
+# Build the project
+go build ./...
+```
+
+### Running Tests
+
+The test suite requires backend services to be running. We provide a Docker Compose setup for this:
+
+```bash
+# Start test infrastructure (Azure Storage Emulator + Redis)
+docker compose -f test/compose.yml up -d
+
+# Run all tests
+go test ./... -v
+
+# Run tests with coverage
+go test ./... -v -coverprofile=coverage.out
+
+# View coverage report
+go tool cover -html=coverage.out
+
+# Stop test infrastructure
+docker compose -f test/compose.yml down
+```
+
+### Test Infrastructure
+
+The `test/compose.yml` file sets up:
+- **Azurite** (Azure Storage Emulator) on port 10002
+- **Redis** on port 6379
+
+### Running Specific Backend Tests
+
+```bash
+# Test only Pebble backend
+go test ./pebble -v
+
+# Test only Redis backend  
+go test ./redis -v
+
+# Test only Azure backend
+go test ./azure -v
+```
+
+---
+
+## 📖 **API Reference**
+
+### Core Interface
+
+The `kv.KV` interface provides the following methods:
+
+```go
+type KV interface {
+    Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
+    GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
+    Insert(ctx context.Context, item *Item) error
+    Put(ctx context.Context, item *Item) error
+    Remove(ctx context.Context, pk lexkey.PrimaryKey) error
+    RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error
+    RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
+    Query(ctx context.Context, queryArgs QueryArgs, sort SortDirection) ([]*Item, error)
+    Enumerate(ctx context.Context, queryArgs QueryArgs) enumerators.Enumerator[*Item]
+    Batch(ctx context.Context, items []*BatchItem) error
+    BatchChunks(ctx context.Context, items enumerators.Enumerator[*BatchItem], chunkSize int) error
+    Close() error
+}
+```
+
+### Query Operators
+
+- `Scan` - Retrieve all items in range
+- `Equal` - Exact match
+- `GreaterThan` / `GreaterThanOrEqual` - Range queries
+- `LessThan` / `LessThanOrEqual` - Range queries  
+- `Between` - Range between two keys
+- `StartsWith` - Prefix matching
+
+### Data Types
+
+```go
+type Item struct {
+    PK    lexkey.PrimaryKey  // Composite key (partition + row)
+    Value []byte             // Stored value
+}
+
+type BatchItem struct {
+    Op    BatchOp            // Put or Delete
+    PK    lexkey.PrimaryKey  
+    Value []byte
+}
+```
+
+---
+
+## 🤝 **Contributing**
+
+We welcome contributions! Please follow these guidelines:
+
+### Development Workflow
+
+1. **Fork and clone** the repository
+2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
+3. **Make your changes** with appropriate tests
+4. **Run the test suite**: `go test ./...`
+5. **Run the linter**: `go vet ./...`
+6. **Commit changes**: `git commit -m 'Add amazing feature'`
+7. **Push to branch**: `git push origin feature/amazing-feature`
+8. **Open a Pull Request**
+
+### Code Standards
+
+- Follow standard Go conventions (`go fmt`, `go vet`)
+- Add tests for new functionality
+- Update documentation for API changes
+- Ensure all backends are supported for new features
+- Maintain backward compatibility
+
+### Testing Requirements
+
+- All tests must pass across all supported backends
+- Add integration tests for new features
+- Include benchmarks for performance-critical changes
+- Test with the provided Docker infrastructure
+
+---
+
+## 📄 **License**
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🔗 **Related Projects**
+
+- [lexkey](https://github.com/fgrzl/lexkey) - Lexicographic key encoding library
+- [enumerators](https://github.com/fgrzl/enumerators) - Generic enumeration utilities
+
+---
+
+## 📞 **Support**
+
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/fgrzl/kv/issues)
+- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/fgrzl/kv/discussions)
+- 📖 **Documentation**: This README and inline code documentation
