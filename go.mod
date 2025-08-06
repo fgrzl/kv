@@ -10,7 +10,7 @@ require (
 	github.com/fgrzl/enumerators v0.1.0-alpha.39
 	github.com/fgrzl/lexkey v0.1.0-alpha.32
 	github.com/google/uuid v1.6.0
-	github.com/redis/go-redis/v9 v9.11.0
+	github.com/redis/go-redis/v9 v9.12.0
 	github.com/stretchr/testify v1.10.0
 )
 
