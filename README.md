@@ -1,4 +1,4 @@
-[![ci](https://github.com/fgrzl/kv/actions/workflows/ci.yml/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/ci.yml)
+[![ci](https://github.com/fgrzl/kv/actions/workflows/ci.yaml/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/ci.yml)
 [![Dependabot Updates](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/fgrzl/kv/actions/workflows/dependabot/dependabot-updates)
 
 # KV
