@@ -37,7 +37,7 @@ jobs:
         run: go mod download
 
       - name: Start Test Infrastructure
-        run: docker compose -f test/compose.yml up -d
+        run: docker compose -f test/compose.yaml up -d
 
       - name: Build Project
         run: go build ./...
