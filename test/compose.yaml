@@ -7,7 +7,7 @@ services:
       - "10002:10002" # Table service port
     command: "azurite --tableHost 0.0.0.0"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:10002/devstoreaccount1" ]
+      test: ["CMD", "curl", "-f", "http://localhost:10002/devstoreaccount1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -19,9 +19,9 @@ services:
     hostname: redis
     ports:
       - "6379:6379" # Default Redis port
-    command: [ "redis-server", "--save", "" ] # Disable persistence
+    command: ["redis-server", "--save", ""] # Disable persistence
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3

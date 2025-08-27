@@ -23,7 +23,7 @@ func NewOptions(opts ...Option) *pebble.Options {
 
 func WithTableCacheShards(n int) Option {
 	return func(o *Options) {
-		o.inner.Experimental.TableCacheShards = n
+		o.inner.Experimental.FileCacheShards = n
 	}
 }
 
@@ -35,7 +35,7 @@ func WithMemTableSize(n uint64) Option {
 
 func WithMaxConcurrentCompactions(get func() int) Option {
 	return func(o *Options) {
-		o.inner.MaxConcurrentCompactions = get
+		o.inner.CompactionConcurrencyRange = func() (int, int) { return 1, get() }
 	}
 }
 
