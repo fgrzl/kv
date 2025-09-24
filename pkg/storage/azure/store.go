@@ -13,7 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/fgrzl/enumerators"
-	"github.com/fgrzl/kv"
+	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
 

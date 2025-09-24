@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/fgrzl/enumerators"
-	"github.com/fgrzl/kv/pebble"
+	"github.com/fgrzl/kv/pkg/storage/pebble"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/fgrzl/enumerators"
-	"github.com/fgrzl/kv"
+	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 	"github.com/redis/go-redis/v9"
 )

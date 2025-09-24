@@ -16,7 +16,7 @@ permissions:
   actions: write
 
 jobs:
-  BuildAndTest:
+  build:
     name: Build and Test
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -26,9 +26,9 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set Up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: 1.24.0
+          go-version: 1.25
 
       - name: Install Dependencies
         run: go mod tidy
@@ -36,11 +36,14 @@ jobs:
       - name: Download Dependencies
         run: go mod download
 
-      - name: Start Test Infrastructure
-        run: docker compose -f test/compose.yaml up -d
+      - name: Vet Project
+        run: go vet ./...
 
       - name: Build Project
         run: go build ./...
+
+      - name: Start Test Infrastructure
+        run: docker compose -f test/compose.yaml up -d
 
       - name: Run Tests
         run: go test ./... -v -coverprofile=coverage.out
