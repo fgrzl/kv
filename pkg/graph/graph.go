@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
+	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
@@ -33,8 +34,31 @@ type Graph interface {
 	IncomingNeighbors(ctx context.Context, to string) ([]Edge, error)
 	Neighbors(ctx context.Context, from string) ([]Edge, error)
 
+	// Existence and count helpers
+	HasNode(ctx context.Context, id string) (bool, error)
+	EdgeExists(ctx context.Context, from, to string) (bool, error)
+	// NodeDegree returns incoming and outgoing edge counts for the node (inCount, outCount)
+	NodeDegree(ctx context.Context, id string) (int, int, error)
+
+	// Streaming enumerators for neighbors (avoid materializing large slices)
+	EnumerateNeighbors(ctx context.Context, from string) enumerators.Enumerator[Edge]
+	EnumerateIncomingNeighbors(ctx context.Context, to string) enumerators.Enumerator[Edge]
+
 	// BFS traversal starting from id. visit is called for each visited node.
 	BFS(ctx context.Context, start string, visit func(id string) error, limit int) error
+
+	BFSWithDepth(ctx context.Context, start string, visit func(id string, depth int) error, limit int) error
+	CollectBFSIDs(ctx context.Context, start string, limit int) ([]string, error)
+
+	DFS(ctx context.Context, start string, visit func(id string) error, limit int) error
+	DFSWithDepth(ctx context.Context, start string, visit func(id string, depth int) error, limit int) error
+	CollectDFSIDs(ctx context.Context, start string, limit int) ([]string, error)
+
+	// BatchAdd atomically (when supported) inserts a set of nodes and edges.
+	// Edges are written as forward and reverse entries. If the backend does not
+	// support large atomic batches the implementation will fall back to chunked
+	// commits.
+	BatchAdd(ctx context.Context, nodes []Node, edges []Edge) error
 }
 
 // graphStore is the default implementation of Graph that stores nodes and edges
@@ -252,6 +276,11 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 	seen := map[string]struct{}{}
 	var visited int
 	for len(queue) > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		cur := queue[0]
 		queue = queue[1:]
 		if _, ok := seen[cur]; ok {
@@ -276,4 +305,309 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 		}
 	}
 	return nil
+}
+
+// BFSWithDepth delegates to the package-level BFSWithDepth helper.
+func (g *graphStore) BFSWithDepth(ctx context.Context, start string, visit func(id string, depth int) error, limit int) error {
+	type qItem struct {
+		id    string
+		depth int
+	}
+	queue := []qItem{{start, 0}}
+	seen := map[string]struct{}{}
+	var visited int
+
+	for len(queue) > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		cur := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[cur.id]; ok {
+			continue
+		}
+		if err := visit(cur.id, cur.depth); err != nil {
+			return err
+		}
+		seen[cur.id] = struct{}{}
+		visited++
+		if limit > 0 && visited >= limit {
+			return nil
+		}
+		nbrs, err := g.Neighbors(ctx, cur.id)
+		if err != nil {
+			return err
+		}
+		for _, e := range nbrs {
+			if _, ok := seen[e.To]; !ok {
+				queue = append(queue, qItem{e.To, cur.depth + 1})
+			}
+		}
+	}
+	return nil
+}
+
+// CollectBFSIDs delegates to the package-level CollectBFSIDs helper.
+func (g *graphStore) CollectBFSIDs(ctx context.Context, start string, limit int) ([]string, error) {
+	var ids []string
+	type qItem struct {
+		id    string
+		depth int
+	}
+	queue := []qItem{{start, 0}}
+	seen := map[string]struct{}{}
+	var visited int
+
+	for len(queue) > 0 {
+		select {
+		case <-ctx.Done():
+			return ids, ctx.Err()
+		default:
+		}
+		cur := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[cur.id]; ok {
+			continue
+		}
+		ids = append(ids, cur.id)
+		seen[cur.id] = struct{}{}
+		visited++
+		if limit > 0 && visited >= limit {
+			return ids, nil
+		}
+		nbrs, err := g.Neighbors(ctx, cur.id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range nbrs {
+			if _, ok := seen[e.To]; !ok {
+				queue = append(queue, qItem{e.To, cur.depth + 1})
+			}
+		}
+	}
+	return ids, nil
+}
+
+// DFSWithDepth delegates to the package-level DFSWithDepth helper.
+func (g *graphStore) DFSWithDepth(ctx context.Context, start string, visit func(id string, depth int) error, limit int) error {
+	type sItem struct {
+		id    string
+		depth int
+	}
+
+	stack := []sItem{{start, 0}}
+	seen := map[string]struct{}{}
+	var visited int
+
+	for len(stack) > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		// pop
+		n := len(stack) - 1
+		cur := stack[n]
+		stack = stack[:n]
+		if _, ok := seen[cur.id]; ok {
+			continue
+		}
+		if err := visit(cur.id, cur.depth); err != nil {
+			return err
+		}
+		seen[cur.id] = struct{}{}
+		visited++
+		if limit > 0 && visited >= limit {
+			return nil
+		}
+		// push neighbors onto stack. To preserve a predictable order that
+		// resembles recursive DFS, we append neighbors in the order returned
+		// so that the first neighbor will be processed last (LIFO).
+		nbrs, err := g.Neighbors(ctx, cur.id)
+		if err != nil {
+			return err
+		}
+		for _, e := range nbrs {
+			if _, ok := seen[e.To]; !ok {
+				stack = append(stack, sItem{e.To, cur.depth + 1})
+			}
+		}
+	}
+	return nil
+}
+
+// DFS performs depth-first traversal calling visit(id) for each visited node.
+func (g *graphStore) DFS(ctx context.Context, start string, visit func(id string) error, limit int) error {
+	return g.DFSWithDepth(ctx, start, func(id string, depth int) error {
+		return visit(id)
+	}, limit)
+}
+
+// CollectDFSIDs delegates to the package-level CollectDFSIDs helper.
+func (g *graphStore) CollectDFSIDs(ctx context.Context, start string, limit int) ([]string, error) {
+	var ids []string
+	type sItem struct {
+		id    string
+		depth int
+	}
+
+	stack := []sItem{{start, 0}}
+	seen := map[string]struct{}{}
+	var visited int
+
+	for len(stack) > 0 {
+		select {
+		case <-ctx.Done():
+			return ids, ctx.Err()
+		default:
+		}
+		// pop
+		n := len(stack) - 1
+		cur := stack[n]
+		stack = stack[:n]
+		if _, ok := seen[cur.id]; ok {
+			continue
+		}
+		ids = append(ids, cur.id)
+		seen[cur.id] = struct{}{}
+		visited++
+		if limit > 0 && visited >= limit {
+			return ids, nil
+		}
+		nbrs, err := g.Neighbors(ctx, cur.id)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range nbrs {
+			if _, ok := seen[e.To]; !ok {
+				stack = append(stack, sItem{e.To, cur.depth + 1})
+			}
+		}
+	}
+	return ids, nil
+}
+
+// BatchAdd inserts nodes and edges into the store. It writes node entries
+// and for each edge writes forward and reverse entries. It attempts a single
+// atomic batch when supported and falls back to chunked commits.
+func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) error {
+	var ops []*kv.BatchItem
+
+	// nodes
+	for _, n := range nodes {
+		sn := storedNode{ID: n.ID, Meta: encodeMeta(n.Meta)}
+		b, err := json.Marshal(sn)
+		if err != nil {
+			return err
+		}
+		pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(n.ID))
+		ops = append(ops, &kv.BatchItem{Op: kv.Put, PK: pk, Value: b})
+	}
+
+	// edges: for each edge, write forward and reverse
+	for _, e := range edges {
+		se := storedEdge{From: e.From, To: e.To, Meta: encodeMeta(e.Meta)}
+		b, err := json.Marshal(se)
+		if err != nil {
+			return err
+		}
+		pkF := lexkey.NewPrimaryKey(g.edgePartition(e.From), lexkey.Encode(e.To))
+		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(e.To), lexkey.Encode(e.From))
+		ops = append(ops, &kv.BatchItem{Op: kv.Put, PK: pkF, Value: b})
+		ops = append(ops, &kv.BatchItem{Op: kv.Put, PK: pkR, Value: b})
+	}
+
+	if len(ops) == 0 {
+		return nil
+	}
+
+	// Try one Batch commit first.
+	if err := g.store.Batch(ctx, ops); err == nil {
+		return nil
+	}
+
+	// Fallback to chunked commits
+	const chunkSize = 1000
+	for i := 0; i < len(ops); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ops) {
+			end = len(ops)
+		}
+		if err := g.store.Batch(ctx, ops[i:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HasNode returns true if a node with the given id exists.
+func (g *graphStore) HasNode(ctx context.Context, id string) (bool, error) {
+	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
+	item, err := g.store.Get(ctx, pk)
+	if err != nil {
+		return false, err
+	}
+	return item != nil, nil
+}
+
+// EdgeExists returns true if an edge from->to exists.
+func (g *graphStore) EdgeExists(ctx context.Context, from, to string) (bool, error) {
+	pk := lexkey.NewPrimaryKey(g.edgePartition(from), lexkey.Encode(to))
+	item, err := g.store.Get(ctx, pk)
+	if err != nil {
+		return false, err
+	}
+	return item != nil, nil
+}
+
+// NodeDegree returns the incoming and outgoing edge counts for a node.
+func (g *graphStore) NodeDegree(ctx context.Context, id string) (int, int, error) {
+	// Count outgoing
+	outPart := g.edgePartition(id)
+	outArgs := kv.QueryArgs{PartitionKey: outPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	outItems, err := g.store.Query(ctx, outArgs, kv.Ascending)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Count incoming
+	inPart := g.inEdgePartition(id)
+	inArgs := kv.QueryArgs{PartitionKey: inPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	inItems, err := g.store.Query(ctx, inArgs, kv.Ascending)
+	if err != nil {
+		return 0, 0, err
+	}
+	return len(inItems), len(outItems), nil
+}
+
+// NeighborsEnumerate streams outgoing neighbors for `from`.
+func (g *graphStore) EnumerateNeighbors(ctx context.Context, from string) enumerators.Enumerator[Edge] {
+	part := g.edgePartition(from)
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	inner := g.store.Enumerate(ctx, args)
+	return enumerators.FilterMap(inner, func(it *kv.Item) (Edge, bool, error) {
+		var se storedEdge
+		if err := json.Unmarshal(it.Value, &se); err != nil {
+			return Edge{}, false, nil
+		}
+		meta, _ := decodeMeta(se.Meta)
+		return Edge{From: se.From, To: se.To, Meta: meta}, true, nil
+	})
+}
+
+// IncomingNeighborsEnumerate streams incoming neighbors for `to`.
+func (g *graphStore) EnumerateIncomingNeighbors(ctx context.Context, to string) enumerators.Enumerator[Edge] {
+	part := g.inEdgePartition(to)
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	inner := g.store.Enumerate(ctx, args)
+	return enumerators.FilterMap(inner, func(it *kv.Item) (Edge, bool, error) {
+		var se storedEdge
+		if err := json.Unmarshal(it.Value, &se); err != nil {
+			return Edge{}, false, nil
+		}
+		meta, _ := decodeMeta(se.Meta)
+		return Edge{From: se.From, To: se.To, Meta: meta}, true, nil
+	})
 }

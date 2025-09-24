@@ -2,8 +2,11 @@ package graph
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
+
+	"github.com/fgrzl/enumerators"
 
 	"github.com/fgrzl/kv/pkg/storage/pebble"
 )
@@ -180,5 +183,285 @@ func TestAddDuplicateNode(t *testing.T) {
 	// adding again should return an error (already exists)
 	if err := g.AddNode(ctx, "x", []byte("xmeta2")); err == nil {
 		t.Fatalf("expected error when adding duplicate node")
+	}
+}
+
+func TestExistenceAndDegreeAPIs(t *testing.T) {
+	path := "./test-pebble-db-exists"
+	_ = os.RemoveAll(path)
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		_ = os.RemoveAll(path)
+	}()
+
+	g := NewGraph(store, "test-exists")
+	ctx := context.Background()
+
+	// create nodes and edges:
+	// a->b, a->c, d->a
+	if err := g.AddNode(ctx, "a", nil); err != nil {
+		t.Fatalf("add node a: %v", err)
+	}
+	if err := g.AddNode(ctx, "b", nil); err != nil {
+		t.Fatalf("add node b: %v", err)
+	}
+	if err := g.AddNode(ctx, "c", nil); err != nil {
+		t.Fatalf("add node c: %v", err)
+	}
+	if err := g.AddNode(ctx, "d", nil); err != nil {
+		t.Fatalf("add node d: %v", err)
+	}
+
+	if err := g.AddEdge(ctx, "a", "b", nil); err != nil {
+		t.Fatalf("add edge a->b: %v", err)
+	}
+	if err := g.AddEdge(ctx, "a", "c", nil); err != nil {
+		t.Fatalf("add edge a->c: %v", err)
+	}
+	if err := g.AddEdge(ctx, "d", "a", nil); err != nil {
+		t.Fatalf("add edge d->a: %v", err)
+	}
+
+	// HasNode
+	ok, err := g.HasNode(ctx, "a")
+	if err != nil || !ok {
+		t.Fatalf("expected HasNode(a) true, got %v err %v", ok, err)
+	}
+	ok, err = g.HasNode(ctx, "z")
+	if err != nil {
+		t.Fatalf("HasNode error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected HasNode(z) false")
+	}
+
+	// EdgeExists
+	ex, err := g.EdgeExists(ctx, "a", "b")
+	if err != nil || !ex {
+		t.Fatalf("expected EdgeExists a->b true, got %v err %v", ex, err)
+	}
+	ex, err = g.EdgeExists(ctx, "b", "a")
+	if err != nil {
+		t.Fatalf("EdgeExists error: %v", err)
+	}
+	if ex {
+		t.Fatalf("expected EdgeExists b->a false")
+	}
+
+	// NodeDegree for a: in=1 (d->a), out=2 (a->b,a->c)
+	in, out, err := g.NodeDegree(ctx, "a")
+	if err != nil {
+		t.Fatalf("NodeDegree error: %v", err)
+	}
+	if in != 1 || out != 2 {
+		t.Fatalf("unexpected degrees for a: got in=%d out=%d", in, out)
+	}
+}
+
+func TestStreamingEnumerators(t *testing.T) {
+	path := "./test-pebble-db-stream"
+	_ = os.RemoveAll(path)
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		_ = os.RemoveAll(path)
+	}()
+
+	g := NewGraph(store, "test-stream")
+	ctx := context.Background()
+
+	// build graph: x->y, x->z, w->x
+	_ = g.AddNode(ctx, "x", nil)
+	_ = g.AddNode(ctx, "y", nil)
+	_ = g.AddNode(ctx, "z", nil)
+	_ = g.AddNode(ctx, "w", nil)
+	_ = g.AddEdge(ctx, "x", "y", nil)
+	_ = g.AddEdge(ctx, "x", "z", nil)
+	_ = g.AddEdge(ctx, "w", "x", nil)
+
+	// compare neighbors slice vs enumerator
+	sl, err := g.Neighbors(ctx, "x")
+	if err != nil {
+		t.Fatalf("Neighbors error: %v", err)
+	}
+	var enumVals []Edge
+	enum := g.EnumerateNeighbors(ctx, "x")
+	if err := enumerators.ForEach(enum, func(e Edge) error {
+		enumVals = append(enumVals, e)
+		return nil
+	}); err != nil {
+		t.Fatalf("NeighborsEnumerate error: %v", err)
+	}
+	if len(sl) != len(enumVals) {
+		t.Fatalf("neighbors mismatch: slice=%v enum=%v", sl, enumVals)
+	}
+
+	// compare incoming
+	slIn, err := g.IncomingNeighbors(ctx, "x")
+	if err != nil {
+		t.Fatalf("IncomingNeighbors error: %v", err)
+	}
+	var enumIn []Edge
+	enum2 := g.EnumerateIncomingNeighbors(ctx, "x")
+	if err := enumerators.ForEach(enum2, func(e Edge) error {
+		enumIn = append(enumIn, e)
+		return nil
+	}); err != nil {
+		t.Fatalf("IncomingNeighborsEnumerate error: %v", err)
+	}
+	if len(slIn) != len(enumIn) {
+		t.Fatalf("incoming neighbors mismatch: slice=%v enum=%v", slIn, enumIn)
+	}
+}
+
+func TestBFSWithDepthAndCollect(t *testing.T) {
+	path := "./test-pebble-db-bfs-depth"
+	_ = os.RemoveAll(path)
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		_ = os.RemoveAll(path)
+	}()
+
+	g := NewGraph(store, "test-bfs-depth")
+	ctx := context.Background()
+
+	// Construct a small graph: a->b, a->c, b->d, c->e
+	_ = g.AddNode(ctx, "a", nil)
+	_ = g.AddNode(ctx, "b", nil)
+	_ = g.AddNode(ctx, "c", nil)
+	_ = g.AddNode(ctx, "d", nil)
+	_ = g.AddNode(ctx, "e", nil)
+	_ = g.AddEdge(ctx, "a", "b", nil)
+	_ = g.AddEdge(ctx, "a", "c", nil)
+	_ = g.AddEdge(ctx, "b", "d", nil)
+	_ = g.AddEdge(ctx, "c", "e", nil)
+
+	// Test BFSWithDepth collects depth info
+	var seen []string
+	if err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 0); err != nil {
+		t.Fatalf("BFSWithDepth error: %v", err)
+	}
+	// Expected to see a:0 then b:1 and c:1 then d:2 and e:2 (order among same-level nodes depends on neighbors order)
+	if len(seen) != 5 {
+		t.Fatalf("unexpected seen list: %v", seen)
+	}
+
+	// Test CollectBFSIDs returns IDs
+	ids, err := g.CollectBFSIDs(ctx, "a", 0)
+	if err != nil {
+		t.Fatalf("CollectBFSIDs error: %v", err)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("unexpected ids: %v", ids)
+	}
+}
+
+func TestDFSWithDepthAndCollect(t *testing.T) {
+	path := "./test-pebble-db-dfs-depth"
+	_ = os.RemoveAll(path)
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		_ = os.RemoveAll(path)
+	}()
+
+	g := NewGraph(store, "test-dfs-depth")
+	ctx := context.Background()
+
+	// Construct a small graph: a->b, a->c, b->d, c->e
+	_ = g.AddNode(ctx, "a", nil)
+	_ = g.AddNode(ctx, "b", nil)
+	_ = g.AddNode(ctx, "c", nil)
+	_ = g.AddNode(ctx, "d", nil)
+	_ = g.AddNode(ctx, "e", nil)
+	_ = g.AddEdge(ctx, "a", "b", nil)
+	_ = g.AddEdge(ctx, "a", "c", nil)
+	_ = g.AddEdge(ctx, "b", "d", nil)
+	_ = g.AddEdge(ctx, "c", "e", nil)
+
+	// Test DFSWithDepth collects depth info
+	var seen []string
+	if err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 0); err != nil {
+		t.Fatalf("DFSWithDepth error: %v", err)
+	}
+	// DFS will visit a first then go deep. Expect 5 nodes visited.
+	if len(seen) != 5 {
+		t.Fatalf("unexpected seen list for DFS: %v", seen)
+	}
+	// Test CollectDFSIDs returns IDs
+	ids, err := g.CollectDFSIDs(ctx, "a", 0)
+	if err != nil {
+		t.Fatalf("CollectDFSIDs error: %v", err)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("unexpected ids for DFS: %v", ids)
+	}
+}
+
+func TestBatchAddNodesAndEdges(t *testing.T) {
+	path := "./test-pebble-db-batch"
+	_ = os.RemoveAll(path)
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("failed to open pebble: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+		_ = os.RemoveAll(path)
+	}()
+
+	g := NewGraph(store, "test-batch")
+	ctx := context.Background()
+
+	nodes := []Node{{ID: "n1"}, {ID: "n2"}, {ID: "n3"}}
+	edges := []Edge{{From: "n1", To: "n2"}, {From: "n2", To: "n3"}}
+
+	if err := g.BatchAdd(ctx, nodes, edges); err != nil {
+		t.Fatalf("BatchAdd failed: %v", err)
+	}
+
+	// Assert nodes exist
+	for _, n := range nodes {
+		ok, err := g.HasNode(ctx, n.ID)
+		if err != nil || !ok {
+			t.Fatalf("expected node %s to exist: %v", n.ID, err)
+		}
+	}
+
+	// Assert edges
+	out, err := g.Neighbors(ctx, "n1")
+	if err != nil {
+		t.Fatalf("neighbors: %v", err)
+	}
+	if len(out) != 1 || out[0].To != "n2" {
+		t.Fatalf("unexpected neighbors for n1: %v", out)
+	}
+
+	in, err := g.IncomingNeighbors(ctx, "n2")
+	if err != nil {
+		t.Fatalf("incoming: %v", err)
+	}
+	if len(in) != 1 || in[0].From != "n1" {
+		t.Fatalf("unexpected incoming for n2: %v", in)
 	}
 }
