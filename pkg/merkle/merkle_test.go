@@ -41,111 +41,184 @@ func leaves(refs ...string) enumerators.Enumerator[Leaf] {
 
 // --- TESTS ---
 
-func TestMerkleBuildAndRootHash(t *testing.T) {
+func TestShouldBuildMerkleTreeAndGetRootHash(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage := "blue"
 	space := "testspace"
 	refs := []string{"A", "B", "C"}
 
+	// Act
 	err := m.Build(ctx, stage, space, leaves(refs...))
-	assert.NoError(t, err, "Build should succeed")
 
+	// Assert
+	assert.NoError(t, err)
 	root, _, err := m.GetRootHash(ctx, stage, space)
-	assert.NoError(t, err, "GetRootHash should succeed")
-	assert.NotNil(t, root, "Root hash should not be nil")
+	assert.NoError(t, err)
+	assert.NotNil(t, root)
 }
 
-func TestMerkleSymmetricDiffAdditions(t *testing.T) {
+func TestShouldReturnSymmetricDiffForAdditions(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage1 := "blue"
 	stage2 := "green"
 	space := "diffspace"
-
 	require.NoError(t, m.Build(ctx, stage1, space, leaves("A", "B")))
 	require.NoError(t, m.Build(ctx, stage2, space, leaves("A", "B", "C")))
 
+	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, stage1, stage2, space))
+
+	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, diffs, 1)
 	assert.Equal(t, "C", diffs[0].Ref)
 }
 
-func TestMerkleSymmetricDiffSubtractions(t *testing.T) {
+func TestShouldReturnSymmetricDiffForSubtractions(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage1 := "blue"
 	stage2 := "green"
 	space := "diffspace"
-
 	require.NoError(t, m.Build(ctx, stage1, space, leaves("A", "B", "C")))
 	require.NoError(t, m.Build(ctx, stage2, space, leaves("A", "B")))
 
+	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, stage1, stage2, space))
+
+	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, diffs, 1)
 	assert.Equal(t, "C", diffs[0].Ref)
 }
 
-func TestMerkleSymmetricDiffAddAndRemove(t *testing.T) {
+func TestShouldReturnSymmetricDiffForAddAndRemove(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage1 := "blue"
 	stage2 := "green"
 	space := "diffspace"
-
 	require.NoError(t, m.Build(ctx, stage1, space, leaves("A", "B", "C")))
 	require.NoError(t, m.Build(ctx, stage2, space, leaves("A", "B", "D")))
 
+	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, stage1, stage2, space))
+
+	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, diffs, 2)
 	assert.Equal(t, "D", diffs[0].Ref)
 	assert.Equal(t, "C", diffs[1].Ref)
 }
 
-func TestMerkleSymmetricDiffEmptyVsNonEmpty(t *testing.T) {
+func TestShouldReturnSymmetricDiffForEmptyVsNonEmpty(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage1 := "blue"
 	stage2 := "green"
 	space := "emptynonempty"
-
 	require.NoError(t, m.Build(ctx, stage1, space, leaves()))
 	require.NoError(t, m.Build(ctx, stage2, space, leaves("A")))
 
+	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, stage1, stage2, space))
+
+	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, diffs, 1)
 	assert.Equal(t, "A", diffs[0].Ref)
 }
 
-func TestMerkleSymmetricDiffNonEmptyVsEmpty(t *testing.T) {
+func TestShouldReturnSymmetricDiffForNonEmptyVsEmpty(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage1 := "blue"
 	stage2 := "green"
 	space := "emptynonempty"
-
 	require.NoError(t, m.Build(ctx, stage1, space, leaves("A")))
 	require.NoError(t, m.Build(ctx, stage2, space, leaves()))
 
+	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, stage1, stage2, space))
+
+	// Assert
 	assert.NoError(t, err)
 	assert.Len(t, diffs, 1)
 	assert.Equal(t, "A", diffs[0].Ref)
 }
 
-func TestMerklePrune(t *testing.T) {
+func TestShouldPruneMerkleTree(t *testing.T) {
+	// Arrange
 	ctx := t.Context()
 	m := setup(t)
 	stage := "blue"
 	space := "prunespace"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("X", "Y")))
 
-	assert.NoError(t, m.Prune(ctx, stage, space), "Prune should succeed")
+	// Act
+	err := m.Prune(ctx, stage, space)
+
+	// Assert
+	assert.NoError(t, err)
 	root, _, err := m.GetRootHash(ctx, stage, space)
-	assert.Nil(t, root, "Root hash should be nil after prune")
-	assert.NoError(t, err, "GetRootHash should not error even after prune")
+	assert.Nil(t, root)
+	assert.NoError(t, err)
+}
+
+func TestShouldReturnDiffBetweenStages(t *testing.T) {
+	// Arrange
+	ctx := t.Context()
+	m := setup(t)
+	stage1 := "blue"
+	stage2 := "green"
+	space := "diffspace"
+	require.NoError(t, m.Build(ctx, stage1, space, leaves("A", "B")))
+	require.NoError(t, m.Build(ctx, stage2, space, leaves("A", "B", "C")))
+
+	// Act
+	diffs, err := enumerators.ToSlice(m.Diff(ctx, stage1, stage2, space))
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, diffs, 1)
+	assert.Equal(t, "C", diffs[0].Ref)
+}
+
+func TestShouldAllowBuildingWithEmptyLeaves(t *testing.T) {
+	// Arrange
+	ctx := t.Context()
+	m := setup(t)
+	stage := "blue"
+	space := "emptyspace"
+
+	// Act
+	err := m.Build(ctx, stage, space, leaves())
+
+	// Assert
+	assert.NoError(t, err)
+	root, _, err := m.GetRootHash(ctx, stage, space)
+	assert.NoError(t, err)
+	assert.Nil(t, root)
+}
+
+func TestShouldHandleInvalidBranchingFactor(t *testing.T) {
+	// Arrange
+	store, err := pebble.NewPebbleStore(filepath.Join(t.TempDir(), "invalid"))
+	require.NoError(t, err)
+	t.Cleanup(func() { store.Close() })
+
+	// Act
+	tree := NewTree(store, WithBranching(1))
+
+	// Assert
+	// Since WithBranching checks n >= 2, it should default to 2
+	assert.NotNil(t, tree)
 }

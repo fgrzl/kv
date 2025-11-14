@@ -131,75 +131,72 @@ func (g *graphStore) GetNode(ctx context.Context, id string) (*Node, error) {
 }
 
 func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
-	// Gather outgoing edges
+	// We'll stream deletes using enumerators to avoid materializing large slices.
+	const chunkSize = 1000
+
+	// Pre-allocate batch with reasonable capacity
+	batch := make([]*kv.BatchItem, 0, chunkSize)
+
+	// helper to flush batch
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := g.store.Batch(ctx, batch); err != nil {
+			return err
+		}
+		batch = batch[:0]
+		return nil
+	}
+
+	// delete the node entry itself
+	nodePK := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
+	batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: nodePK})
+
+	// process outgoing edges (forward entries) streamingly
 	outPart := g.edgePartition(id)
 	outArgs := kv.QueryArgs{PartitionKey: outPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	outItems, err := g.store.Query(ctx, outArgs, kv.Ascending)
-	if err != nil {
-		return err
-	}
-
-	// Gather incoming edges
-	inPart := g.inEdgePartition(id)
-	inArgs := kv.QueryArgs{PartitionKey: inPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	inItems, err := g.store.Query(ctx, inArgs, kv.Ascending)
-	if err != nil {
-		return err
-	}
-
-	// Build batch deletes: remove node, outgoing forward+reverse, incoming reverse+forward
-	var ops []*kv.BatchItem
-	// delete node key
-	nodePK := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
-	ops = append(ops, &kv.BatchItem{Op: kv.Delete, PK: nodePK})
-
-	// outgoing edges: for each forward entry (to), delete forward and reverse
-	for _, it := range outItems {
-		// decode row key via existing storedEdge (value contains from/to)
+	outEnum := g.store.Enumerate(ctx, outArgs)
+	if err := enumerators.ForEach(outEnum, func(it *kv.Item) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
-			continue
+			// skip malformed entries
+			return nil
 		}
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(id), lexkey.Encode(se.To))
 		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(se.To), lexkey.Encode(id))
-		ops = append(ops, &kv.BatchItem{Op: kv.Delete, PK: pkF})
-		ops = append(ops, &kv.BatchItem{Op: kv.Delete, PK: pkR})
+		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkF})
+		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkR})
+		if len(batch) >= chunkSize {
+			return flush()
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	// incoming edges: for each reverse entry (from), delete reverse and forward
-	for _, it := range inItems {
+	// process incoming edges (reverse entries) streamingly
+	inPart := g.inEdgePartition(id)
+	inArgs := kv.QueryArgs{PartitionKey: inPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	inEnum := g.store.Enumerate(ctx, inArgs)
+	if err := enumerators.ForEach(inEnum, func(it *kv.Item) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
-			continue
+			return nil
 		}
 		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(id), lexkey.Encode(se.From))
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(se.From), lexkey.Encode(id))
-		ops = append(ops, &kv.BatchItem{Op: kv.Delete, PK: pkR})
-		ops = append(ops, &kv.BatchItem{Op: kv.Delete, PK: pkF})
+		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkR})
+		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkF})
+		if len(batch) >= chunkSize {
+			return flush()
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	// Attempt an atomic batch commit where supported by the backend.
-	if len(ops) == 0 {
-		return nil
-	}
-	// Try one Batch for all ops first (atomic when supported, e.g., Pebble)
-	if err := g.store.Batch(ctx, ops); err == nil {
-		return nil
-	}
-
-	// If the backend doesn't support very large batches or returned an error,
-	// fall back to chunked commits for resiliency.
-	const chunkSize = 1000
-	for i := 0; i < len(ops); i += chunkSize {
-		end := i + chunkSize
-		if end > len(ops) {
-			end = len(ops)
-		}
-		if err := g.store.Batch(ctx, ops[i:end]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return flush()
 }
 
 func (g *graphStore) AddEdge(ctx context.Context, from, to string, meta []byte) error {
@@ -237,7 +234,7 @@ func (g *graphStore) Neighbors(ctx context.Context, from string) ([]Edge, error)
 	if err != nil {
 		return nil, err
 	}
-	var out []Edge
+	out := make([]Edge, 0, len(items)) // pre-allocate with known capacity
 	for _, it := range items {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
@@ -258,7 +255,7 @@ func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, 
 	if err != nil {
 		return nil, err
 	}
-	var out []Edge
+	out := make([]Edge, 0, len(items)) // pre-allocate
 	for _, it := range items {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
@@ -271,10 +268,12 @@ func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, 
 }
 
 func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string) error, limit int) error {
-	// simple queue-based BFS
-	queue := []string{start}
-	seen := map[string]struct{}{}
+	// simple queue-based BFS with pre-allocation optimizations
+	queue := make([]string, 0, 100) // pre-allocate
+	queue = append(queue, start)
+	seen := make(map[string]struct{}, 100) // pre-allocate
 	var visited int
+
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
@@ -313,8 +312,9 @@ func (g *graphStore) BFSWithDepth(ctx context.Context, start string, visit func(
 		id    string
 		depth int
 	}
-	queue := []qItem{{start, 0}}
-	seen := map[string]struct{}{}
+	queue := make([]qItem, 0, 100) // pre-allocate
+	queue = append(queue, qItem{start, 0})
+	seen := make(map[string]struct{}, 100) // pre-allocate
 	var visited int
 
 	for len(queue) > 0 {
@@ -336,14 +336,16 @@ func (g *graphStore) BFSWithDepth(ctx context.Context, start string, visit func(
 		if limit > 0 && visited >= limit {
 			return nil
 		}
-		nbrs, err := g.Neighbors(ctx, cur.id)
-		if err != nil {
-			return err
-		}
-		for _, e := range nbrs {
-			if _, ok := seen[e.To]; !ok {
-				queue = append(queue, qItem{e.To, cur.depth + 1})
+
+		// Use streaming enumeration for better performance
+		enumerator := g.EnumerateNeighbors(ctx, cur.id)
+		if err := enumerators.ForEach(enumerator, func(edge Edge) error {
+			if _, ok := seen[edge.To]; !ok {
+				queue = append(queue, qItem{edge.To, cur.depth + 1})
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -351,13 +353,14 @@ func (g *graphStore) BFSWithDepth(ctx context.Context, start string, visit func(
 
 // CollectBFSIDs delegates to the package-level CollectBFSIDs helper.
 func (g *graphStore) CollectBFSIDs(ctx context.Context, start string, limit int) ([]string, error) {
-	var ids []string
+	ids := make([]string, 0, 100) // pre-allocate
 	type qItem struct {
 		id    string
 		depth int
 	}
-	queue := []qItem{{start, 0}}
-	seen := map[string]struct{}{}
+	queue := make([]qItem, 0, 100) // pre-allocate
+	queue = append(queue, qItem{start, 0})
+	seen := make(map[string]struct{}, 100) // pre-allocate
 	var visited int
 
 	for len(queue) > 0 {
@@ -377,14 +380,16 @@ func (g *graphStore) CollectBFSIDs(ctx context.Context, start string, limit int)
 		if limit > 0 && visited >= limit {
 			return ids, nil
 		}
-		nbrs, err := g.Neighbors(ctx, cur.id)
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range nbrs {
-			if _, ok := seen[e.To]; !ok {
-				queue = append(queue, qItem{e.To, cur.depth + 1})
+
+		// Use streaming enumeration
+		enumerator := g.EnumerateNeighbors(ctx, cur.id)
+		if err := enumerators.ForEach(enumerator, func(edge Edge) error {
+			if _, ok := seen[edge.To]; !ok {
+				queue = append(queue, qItem{edge.To, cur.depth + 1})
 			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 	return ids, nil
@@ -493,7 +498,8 @@ func (g *graphStore) CollectDFSIDs(ctx context.Context, start string, limit int)
 // and for each edge writes forward and reverse entries. It attempts a single
 // atomic batch when supported and falls back to chunked commits.
 func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) error {
-	var ops []*kv.BatchItem
+	// Pre-allocate with estimated capacity
+	ops := make([]*kv.BatchItem, 0, len(nodes)+2*len(edges))
 
 	// nodes
 	for _, n := range nodes {

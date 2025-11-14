@@ -34,6 +34,39 @@ The library follows an interface-based design pattern with a core `KV` interface
 
 ---
 
+## ⚡ **Performance**
+
+The library is designed with performance in mind, ensuring that overlay abstractions (Graph, Merkle, Timeseries) add minimal overhead compared to direct KV operations.
+
+**Benchmark Results (on Intel i9-12900HK):**
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| KV Put | ~323µs | Base operation |
+| KV Get | ~494ns | Fast retrieval |
+| KV Batch | ~329µs | Efficient bulk writes |
+| Graph AddNode | ~328µs | Optimized with pre-allocation |
+| Graph BFS | ~19.8µs | Optimized traversal with pre-allocated data structures |
+| Merkle Build (100 leaves) | ~663µs | Optimized with pre-allocation and efficient batching |
+| Merkle Build (1000 leaves) | ~773µs | Scales well for larger trees |
+| Timeseries Append | ~339µs | Slight overhead acceptable |
+| Timeseries QueryRange | ~102µs | Fast range queries |
+
+Overlays maintain high performance while providing rich functionality, with no unnecessary abstraction penalties.
+
+**Graph Optimizations:**
+- Pre-allocated slices and maps for BFS traversal
+- Optimized batch operations with capacity hints
+- Memory-efficient data structures for large graphs
+
+**Merkle Tree Optimizations:**
+- Pre-allocated slices for reduced memory allocations
+- Efficient batching for storage operations
+- Optimized hash computation with SHA256 reuse
+- Memory-efficient processing for large trees
+
+---
+
 ## 📦 **Installation**
 
 ```bash

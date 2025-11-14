@@ -155,11 +155,11 @@ func (m *Tree) pruneOldNodes(ctx context.Context, stage, space string) error {
 }
 
 func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) ([]Branch, error) {
-	var (
-		currNodes []Branch
-		index     int
-		batch     = make([]*kv.BatchItem, 0, m.batchSize)
-	)
+	// Pre-allocate with reasonable capacity
+	currNodes := make([]Branch, 0, 1000)
+	batch := make([]*kv.BatchItem, 0, m.batchSize)
+
+	index := 0
 	writeLeafNode := func(idx int, val []byte) error {
 		pk := pk(stage, space, 0, idx)
 		batch = append(batch, &kv.BatchItem{PK: pk, Value: val, Op: kv.Put})
@@ -167,10 +167,11 @@ func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves en
 			if err := m.store.Batch(ctx, batch); err != nil {
 				return err
 			}
-			batch = batch[:0]
+			batch = batch[:0] // Reset batch
 		}
 		return nil
 	}
+
 	if err := enumerators.ForEach(leaves, func(leaf Leaf) error {
 		val, err := json.Marshal(leaf)
 		if err != nil {
@@ -185,6 +186,7 @@ func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves en
 	}); err != nil {
 		return nil, err
 	}
+
 	if len(batch) > 0 {
 		if err := m.store.Batch(ctx, batch); err != nil {
 			return nil, err
@@ -247,10 +249,12 @@ func (m *Tree) persistInternalLevels(ctx context.Context, stage, space string, n
 }
 
 func (m *Tree) hashNodeLevel(stage, space string, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
-	var (
-		next  []Branch
-		batch []*kv.BatchItem
-	)
+	numGroups := (len(nodes) + m.branching - 1) / m.branching
+
+	// Pre-allocate slices for better performance
+	next := make([]Branch, 0, numGroups)
+	batch := make([]*kv.BatchItem, 0, numGroups)
+
 	for i := 0; i < len(nodes); i += m.branching {
 		end := min(i+m.branching, len(nodes))
 		sum := hashNodes(nodes[i:end])
@@ -290,7 +294,15 @@ func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodeP
 	currHash, currVal, errCurr := m.getHash(ctx, curr, space, ref)
 
 	if errPrev != nil || errCurr != nil {
-		return enumerators.Error[Leaf](fmt.Errorf("get hash error: %w%w", errPrev, errCurr))
+		var combined error
+		if errPrev != nil && errCurr != nil {
+			combined = fmt.Errorf("get hash errors: prev=%v curr=%v", errPrev, errCurr)
+		} else if errPrev != nil {
+			combined = fmt.Errorf("get hash prev: %w", errPrev)
+		} else {
+			combined = fmt.Errorf("get hash curr: %w", errCurr)
+		}
+		return enumerators.Error[Leaf](combined)
 	}
 
 	// Edge: Both trees empty at root

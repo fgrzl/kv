@@ -1,0 +1,149 @@
+package timeseries
+
+import (
+	"context"
+	"encoding/json"
+	"math"
+
+	"github.com/fgrzl/enumerators"
+	"github.com/fgrzl/kv"
+	"github.com/fgrzl/lexkey"
+)
+
+// Sample represents a single time series datapoint.
+type Sample struct {
+	Series    string `json:"series"`
+	Timestamp int64  `json:"ts"`
+	Value     []byte `json:"value"`
+}
+
+// TimeSeries provides a small overlay backed by a kv.KV store to append and
+// query time-ordered samples per series.
+type TimeSeries struct {
+	store kv.KV
+	name  string
+	// descending indicates the natural order for this series. When true,
+	// row keys are encoded so that lexicographic ascending scans yield
+	// newest->oldest items.
+	descending bool
+}
+
+// New returns a new TimeSeries overlay using the provided kv store and
+// optional namespace name to partition keys.
+// Option configures a TimeSeries instance.
+type Option func(*TimeSeries)
+
+// WithDescending configures the TimeSeries to store row-keys such that
+// scans return newest->oldest (descending) order.
+func WithDescending(d bool) Option {
+	return func(ts *TimeSeries) { ts.descending = d }
+}
+
+func New(store kv.KV, name string, opts ...Option) *TimeSeries {
+	ts := &TimeSeries{store: store, name: name}
+	for _, o := range opts {
+		o(ts)
+	}
+	return ts
+}
+
+func (ts *TimeSeries) partition(series string) lexkey.LexKey {
+	return lexkey.Encode("timeseries", ts.name, series)
+}
+
+func (ts *TimeSeries) encodeRowKeyForTimestamp(tsVal int64) lexkey.LexKey {
+	if !ts.descending {
+		return lexkey.Encode(tsVal)
+	}
+	// Use bitwise complement to invert ordering in uint64 space. This maps
+	// larger timestamps to smaller encoded values so that lexicographic
+	// ascending scans return newest->oldest.
+	return lexkey.Encode(^uint64(uint64(tsVal)))
+}
+
+func (ts *TimeSeries) encodeRangeForBounds(from, to int64) (lexkey.LexKey, lexkey.LexKey, bool) {
+	// returns (startRowKey, endRowKey, ok)
+	if from >= to {
+		return nil, nil, false
+	}
+	if !ts.descending {
+		return lexkey.Encode(from), lexkey.Encode(to), true
+	}
+	// descending: map [from, to) timestamps into encoded space.
+	// encodedStart = enc(to-1) (smallest encoded value in range)
+	// encodedEnd = enc(from) (largest encoded value in range)
+	// handle edge when to==math.MinInt64 or to==0
+	if to <= math.MinInt64+1 {
+		return nil, nil, false
+	}
+	encStart := ts.encodeRowKeyForTimestamp(to - 1)
+	encEnd := ts.encodeRowKeyForTimestamp(from)
+	return encStart, encEnd, true
+}
+
+// Append inserts a sample for the given series. Timestamp should be an unix
+// epoch in seconds or milliseconds as desired by the caller; lexicographic
+// ordering is preserved by the lexkey encoding of the timestamp value.
+func (ts *TimeSeries) Append(ctx context.Context, series string, timestamp int64, value []byte) error {
+	s := Sample{Series: series, Timestamp: timestamp, Value: value}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	pk := lexkey.NewPrimaryKey(ts.partition(series), ts.encodeRowKeyForTimestamp(timestamp))
+	return ts.store.Put(ctx, &kv.Item{PK: pk, Value: b})
+}
+
+// QueryRange returns samples for series within [from, to) ordered by timestamp ascending.
+func (ts *TimeSeries) QueryRange(ctx context.Context, series string, from, to int64) ([]Sample, error) {
+	part := ts.partition(series)
+	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	if !ok {
+		return nil, nil
+	}
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Scan}
+	items, err := ts.store.Query(ctx, args, kv.Ascending)
+	if err != nil {
+		return nil, err
+	}
+	var out []Sample
+	for _, it := range items {
+		var s Sample
+		if err := json.Unmarshal(it.Value, &s); err != nil {
+			continue
+		}
+		// Ensure returned samples honor the requested bounds since underlying
+		// storage query may include padding or use lexicographic row keys.
+		if s.Timestamp >= from && s.Timestamp < to {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// DeleteSeries removes all samples for a series.
+func (ts *TimeSeries) DeleteSeries(ctx context.Context, series string) error {
+	rangeKey := lexkey.NewRangeKeyFull(ts.partition(series))
+	return ts.store.RemoveRange(ctx, rangeKey)
+}
+
+// EnumerateRange streams samples for `series` within [from, to) ordered by timestamp ascending.
+func (ts *TimeSeries) EnumerateRange(ctx context.Context, series string, from, to int64) enumerators.Enumerator[Sample] {
+	part := ts.partition(series)
+	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	if !ok {
+		return enumerators.Empty[Sample]()
+	}
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Scan}
+	inner := ts.store.Enumerate(ctx, args)
+	return enumerators.FilterMap(inner, func(it *kv.Item) (Sample, bool, error) {
+		var s Sample
+		if err := json.Unmarshal(it.Value, &s); err != nil {
+			return Sample{}, false, nil
+		}
+		if s.Timestamp >= from && s.Timestamp < to {
+			return s, true, nil
+		}
+		return Sample{}, false, nil
+	})
+}

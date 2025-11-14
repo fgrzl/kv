@@ -1,10 +1,12 @@
 package kv_test
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
 
+	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/kv/pkg/storage/azure"
 	"github.com/fgrzl/kv/pkg/storage/pebble"
@@ -84,6 +86,33 @@ func setup(t *testing.T, provider string) kv.KV {
 	}
 	err = store.Batch(t.Context(), batch)
 	require.NoError(t, err)
+
+	return store
+}
+
+// benchmarkSetup initializes a database for benchmarks.
+func benchmarkSetup(b *testing.B, provider string) kv.KV {
+	var store kv.KV
+	var err error
+
+	switch provider {
+
+	case "pebble":
+		tempDir := b.TempDir()
+		dbPath := filepath.Join(tempDir, fmt.Sprintf("bench_%v.pebble", uuid.NewString()))
+		store, err = pebble.NewPebbleStore(dbPath, pebble.WithTableCacheShards(1))
+		if err != nil {
+			b.Fatal(err)
+		}
+
+	default:
+		b.Skipf("Benchmark not supported for provider: %s", provider)
+	}
+
+	// Cleanup after benchmark
+	b.Cleanup(func() {
+		store.Close()
+	})
 
 	return store
 }
@@ -323,7 +352,279 @@ func TestQueryPartitionScanWithLimit(t *testing.T) {
 
 			// Assert
 			assert.NoError(t, err)
-			assert.Len(t, results, 3) // order is not guaranteed
+			assert.Len(t, results, 3)
+		})
+	}
+}
+
+func TestShouldGetItem(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			pk := sampleData[0].PK
+
+			// Act
+			item, err := db.Get(t.Context(), pk)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.NotNil(t, item)
+			assert.Equal(t, sampleData[0].Value, item.Value)
+		})
+	}
+}
+
+func TestShouldGetBatchItems(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			keys := []lexkey.PrimaryKey{sampleData[0].PK, sampleData[1].PK}
+
+			// Act
+			items, err := db.GetBatch(t.Context(), keys...)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, items, 2)
+			values := make(map[string][]byte)
+			for _, item := range items {
+				values[string(item.PK.RowKey)] = item.Value
+			}
+			assert.Equal(t, sampleData[0].Value, values[string(sampleData[0].PK.RowKey)])
+			assert.Equal(t, sampleData[1].Value, values[string(sampleData[1].PK.RowKey)])
+		})
+	}
+}
+
+func TestShouldInsertItem(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			newItem := &kv.Item{PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("new")), Value: []byte("new value")}
+
+			// Act
+			err := db.Insert(t.Context(), newItem)
+
+			// Assert
+			assert.NoError(t, err)
+			// Verify it was inserted
+			retrieved, err := db.Get(t.Context(), newItem.PK)
+			assert.NoError(t, err)
+			assert.Equal(t, newItem.Value, retrieved.Value)
+		})
+	}
+}
+
+func TestShouldFailInsertWhenItemExists(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			existingPK := sampleData[0].PK
+
+			// Act
+			err := db.Insert(t.Context(), &kv.Item{PK: existingPK, Value: []byte("duplicate")})
+
+			// Assert
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestShouldRemoveBatch(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			keys := []lexkey.PrimaryKey{sampleData[0].PK, sampleData[1].PK}
+
+			// Act
+			err := db.RemoveBatch(t.Context(), keys...)
+
+			// Assert
+			assert.NoError(t, err)
+			// Verify removed
+			for _, key := range keys {
+				item, err := db.Get(t.Context(), key)
+				assert.NoError(t, err)
+				assert.Nil(t, item)
+			}
+		})
+	}
+}
+
+func TestShouldRemoveRange(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			rangeKey := lexkey.NewRangeKey(partitionKey, lexkey.Encode("a"), lexkey.Encode("d"))
+
+			// Act
+			err := db.RemoveRange(t.Context(), rangeKey)
+
+			// Assert
+			assert.NoError(t, err)
+			// Verify range removed (a, b, c should be gone)
+			for _, item := range sampleData {
+				if string(item.PK.RowKey) >= "a" && string(item.PK.RowKey) < "d" {
+					retrieved, err := db.Get(t.Context(), item.PK)
+					assert.NoError(t, err)
+					assert.Nil(t, retrieved, "item %s should be removed", string(item.PK.RowKey))
+				}
+			}
+		})
+	}
+}
+
+func TestShouldEnumerateQueryResults(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			args := kv.QueryArgs{
+				PartitionKey: partitionKey,
+				StartRowKey:  lexkey.Encode("a"),
+				EndRowKey:    lexkey.Encode("c"),
+				Operator:     kv.Between,
+			}
+
+			// Act
+			var results []*kv.Item
+			enumerator := db.Enumerate(t.Context(), args)
+			err := enumerators.ForEach(enumerator, func(item *kv.Item) error {
+				results = append(results, item)
+				return nil
+			})
+
+			// Assert
+			assert.NoError(t, err)
+			assert.True(t, len(results) >= 2) // a, b, possibly c
+		})
+	}
+}
+
+func TestShouldBatchPutItems(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			batch := []*kv.BatchItem{
+				{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("batch1")), Value: []byte("val1")},
+				{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("batch2")), Value: []byte("val2")},
+			}
+
+			// Act
+			err := db.Batch(t.Context(), batch)
+
+			// Assert
+			assert.NoError(t, err)
+			// Verify
+			item1, err := db.Get(t.Context(), batch[0].PK)
+			assert.NoError(t, err)
+			assert.Equal(t, []byte("val1"), item1.Value)
+		})
+	}
+}
+
+func TestShouldBatchChunks(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			batch := []*kv.BatchItem{
+				{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("chunk1")), Value: []byte("val1")},
+				{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("chunk2")), Value: []byte("val2")},
+			}
+			enumerator := enumerators.Slice(batch)
+
+			// Act
+			err := db.BatchChunks(t.Context(), enumerator, 1)
+
+			// Assert
+			assert.NoError(t, err)
+			// Verify
+			item1, err := db.Get(t.Context(), batch[0].PK)
+			assert.NoError(t, err)
+			assert.Equal(t, []byte("val1"), item1.Value)
+		})
+	}
+}
+
+// Benchmarks
+
+// BenchmarkPut measures Put performance across providers.
+func BenchmarkPut(b *testing.B) {
+	for _, provider := range providers {
+		b.Run(provider, func(b *testing.B) {
+			db := benchmarkSetup(b, provider)
+			defer db.Close()
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				item := &kv.Item{
+					PK:    lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("bench-%d", i))),
+					Value: []byte("benchmark value"),
+				}
+				if err := db.Put(context.Background(), item); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkGet measures Get performance across providers.
+func BenchmarkGet(b *testing.B) {
+	for _, provider := range providers {
+		b.Run(provider, func(b *testing.B) {
+			db := benchmarkSetup(b, provider)
+			defer db.Close()
+
+			// Pre-populate
+			for i := 0; i < 100; i++ {
+				item := &kv.Item{
+					PK:    lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("bench-%d", i))),
+					Value: []byte("benchmark value"),
+				}
+				if err := db.Put(context.Background(), item); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				pk := lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("bench-%d", i%100)))
+				_, err := db.Get(context.Background(), pk)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkBatch measures batch performance across providers.
+func BenchmarkBatch(b *testing.B) {
+	for _, provider := range providers {
+		b.Run(provider, func(b *testing.B) {
+			db := benchmarkSetup(b, provider)
+			defer db.Close()
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				batch := []*kv.BatchItem{
+					{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("batch-%d-1", i))), Value: []byte("val1")},
+					{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("batch-%d-2", i))), Value: []byte("val2")},
+					{Op: kv.Put, PK: lexkey.NewPrimaryKey(partitionKey, lexkey.Encode(fmt.Sprintf("batch-%d-3", i))), Value: []byte("val3")},
+				}
+				if err := db.Batch(context.Background(), batch); err != nil {
+					b.Fatal(err)
+				}
+			}
 		})
 	}
 }

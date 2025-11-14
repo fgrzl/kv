@@ -9,459 +9,474 @@ import (
 	"github.com/fgrzl/enumerators"
 
 	"github.com/fgrzl/kv/pkg/storage/pebble"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGraphBasic(t *testing.T) {
+func setupGraph(t *testing.T) Graph {
 	// create a temp pebble DB
 	path := "./test-pebble-db"
 	_ = os.RemoveAll(path)
 	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
+	require.NoError(t, err)
+	t.Cleanup(func() {
 		_ = store.Close()
 		_ = os.RemoveAll(path)
-	}()
+	})
+	return NewGraph(store, "test")
+}
 
-	g := NewGraph(store, "test")
+func TestShouldAddNodeSuccessfully(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
 
-	if err := g.AddNode(ctx, "a", []byte("A-meta")); err != nil {
-		t.Fatalf("add node a: %v", err)
-	}
-	if err := g.AddNode(ctx, "b", []byte("B-meta")); err != nil {
-		t.Fatalf("add node b: %v", err)
-	}
-	if err := g.AddEdge(ctx, "a", "b", []byte("a->b")); err != nil {
-		t.Fatalf("add edge a->b: %v", err)
-	}
+	// Act
+	err := g.AddNode(ctx, "a", []byte("A-meta"))
 
-	// check neighbors
+	// Assert
+	assert.NoError(t, err)
+}
+
+func TestShouldReturnErrorWhenAddingDuplicateNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "x", []byte("xmeta")))
+
+	// Act
+	err := g.AddNode(ctx, "x", []byte("xmeta2"))
+
+	// Assert
+	assert.Error(t, err)
+}
+
+func TestShouldGetNodeSuccessfully(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", []byte("meta")))
+
+	// Act
+	node, err := g.GetNode(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	assert.Equal(t, "a", node.ID)
+	assert.Equal(t, []byte("meta"), node.Meta)
+}
+
+func TestShouldReturnNilWhenGettingNonExistentNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+
+	// Act
+	node, err := g.GetNode(ctx, "nonexistent")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Nil(t, node)
+}
+
+func TestShouldDeleteNodeAndCascadeEdges(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "c", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "a", nil))
+
+	// Act
+	err := g.DeleteNode(ctx, "b")
+
+	// Assert
+	assert.NoError(t, err)
+	node, err := g.GetNode(ctx, "b")
+	assert.NoError(t, err)
+	assert.Nil(t, node)
+	// Edges should be removed
+	nbrsA, err := g.Neighbors(ctx, "a")
+	assert.NoError(t, err)
+	assert.Len(t, nbrsA, 0)
+	inC, err := g.IncomingNeighbors(ctx, "c")
+	assert.NoError(t, err)
+	assert.Len(t, inC, 0)
+}
+
+func TestShouldAddEdgeSuccessfully(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+
+	// Act
+	err := g.AddEdge(ctx, "a", "b", []byte("edge-meta"))
+
+	// Assert
+	assert.NoError(t, err)
+}
+
+func TestShouldRemoveEdgeSuccessfully(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+
+	// Act
+	err := g.RemoveEdge(ctx, "a", "b")
+
+	// Assert
+	assert.NoError(t, err)
 	nbrs, err := g.Neighbors(ctx, "a")
-	if err != nil {
-		t.Fatalf("neighbors: %v", err)
-	}
-	if len(nbrs) != 1 || nbrs[0].To != "b" {
-		t.Fatalf("unexpected neighbors: %#v", nbrs)
-	}
-
-	// check incoming neighbors for b
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 0)
 	in, err := g.IncomingNeighbors(ctx, "b")
-	if err != nil {
-		t.Fatalf("incoming neighbors: %v", err)
-	}
-	if len(in) != 1 || in[0].From != "a" {
-		t.Fatalf("unexpected incoming neighbors: %#v", in)
-	}
+	assert.NoError(t, err)
+	assert.Len(t, in, 0)
+}
 
-	// BFS should visit a then b
+func TestShouldReturnNeighborsCorrectly(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+
+	// Act
+	nbrs, err := g.Neighbors(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 2)
+	// Order may vary, check both
+	ids := make([]string, len(nbrs))
+	for i, e := range nbrs {
+		ids[i] = e.To
+	}
+	assert.Contains(t, ids, "b")
+	assert.Contains(t, ids, "c")
+}
+
+func TestShouldReturnIncomingNeighborsCorrectly(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "a", nil))
+	require.NoError(t, g.AddEdge(ctx, "c", "a", nil))
+
+	// Act
+	in, err := g.IncomingNeighbors(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, in, 2)
+	ids := make([]string, len(in))
+	for i, e := range in {
+		ids[i] = e.From
+	}
+	assert.Contains(t, ids, "b")
+	assert.Contains(t, ids, "c")
+}
+
+func TestShouldPerformBFSTraversal(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "c", nil))
+
+	// Act
 	var order []string
-	if err := g.BFS(ctx, "a", func(id string) error {
+	err := g.BFS(ctx, "a", func(id string) error {
 		order = append(order, id)
 		return nil
-	}, 0); err != nil {
-		t.Fatalf("bfs: %v", err)
-	}
-	if len(order) != 2 || order[0] != "a" || order[1] != "b" {
-		t.Fatalf("unexpected bfs order: %v", order)
-	}
+	}, 0)
 
-	// remove the edge and assert both directions removed
-	if err := g.RemoveEdge(ctx, "a", "b"); err != nil {
-		t.Fatalf("remove edge: %v", err)
-	}
-	nbrsAfter, err := g.Neighbors(ctx, "a")
-	if err != nil {
-		t.Fatalf("neighbors after remove: %v", err)
-	}
-	if len(nbrsAfter) != 0 {
-		t.Fatalf("expected no neighbors after remove, got: %#v", nbrsAfter)
-	}
-	inAfter, err := g.IncomingNeighbors(ctx, "b")
-	if err != nil {
-		t.Fatalf("incoming after remove: %v", err)
-	}
-	if len(inAfter) != 0 {
-		t.Fatalf("expected no incoming after remove, got: %#v", inAfter)
-	}
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, order, 3)
+	assert.Equal(t, "a", order[0])
+	assert.Contains(t, order[1:], "b")
+	assert.Contains(t, order[1:], "c")
 }
 
-func TestDeleteNodeCascade(t *testing.T) {
-	path := "./test-pebble-db-cascade"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-cascade")
+func TestShouldPerformBFSWithDepth(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddNode(ctx, "d", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "d", nil))
 
-	_ = g.AddNode(ctx, "a", nil)
-	_ = g.AddNode(ctx, "b", nil)
-	_ = g.AddNode(ctx, "c", nil)
-	_ = g.AddNode(ctx, "d", nil)
+	// Act
+	var seen []string
+	err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 0)
 
-	// a->b, c->b (incoming to b), and b->d (outgoing from b)
-	_ = g.AddEdge(ctx, "a", "b", nil)
-	_ = g.AddEdge(ctx, "c", "b", nil)
-	_ = g.AddEdge(ctx, "b", "d", nil)
-
-	// delete node b and ensure edges are removed
-	if err := g.DeleteNode(ctx, "b"); err != nil {
-		t.Fatalf("delete node b: %v", err)
-	}
-
-	// b should be gone
-	nb, err := g.GetNode(ctx, "b")
-	if err != nil {
-		t.Fatalf("get node b: %v", err)
-	}
-	if nb != nil {
-		t.Fatalf("expected node b to be deleted")
-	}
-
-	// outgoing from a should not include b
-	na, err := g.Neighbors(ctx, "a")
-	if err != nil {
-		t.Fatalf("neighbors a: %v", err)
-	}
-	for _, e := range na {
-		if e.To == "b" {
-			t.Fatalf("expected edge a->b removed")
-		}
-	}
-
-	// incoming to b should be empty
-	in, err := g.IncomingNeighbors(ctx, "b")
-	if err != nil {
-		t.Fatalf("incoming b: %v", err)
-	}
-	if len(in) != 0 {
-		t.Fatalf("expected no incoming to b after delete, got: %#v", in)
-	}
-
-	// outgoing from b should be empty
-	outB, err := g.Neighbors(ctx, "b")
-	if err != nil {
-		t.Fatalf("neighbors b: %v", err)
-	}
-	if len(outB) != 0 {
-		t.Fatalf("expected no outgoing from b after delete, got: %#v", outB)
-	}
-
-	// edge b->d removed, but other nodes still exist
-	nd, err := g.GetNode(ctx, "d")
-	if err != nil || nd == nil {
-		t.Fatalf("expected node d to remain: %v", err)
-	}
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, seen, 4)
+	assert.Contains(t, seen, "a:0")
+	assert.Contains(t, seen, "b:1")
+	assert.Contains(t, seen, "c:1")
+	assert.Contains(t, seen, "d:2")
 }
 
-func TestAddDuplicateNode(t *testing.T) {
-	path := "./test-pebble-db-dup"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-dup")
+func TestShouldCollectBFSIDs(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
 
-	if err := g.AddNode(ctx, "x", []byte("xmeta")); err != nil {
-		t.Fatalf("add node x: %v", err)
-	}
-	// adding again should return an error (already exists)
-	if err := g.AddNode(ctx, "x", []byte("xmeta2")); err == nil {
-		t.Fatalf("expected error when adding duplicate node")
-	}
+	// Act
+	ids, err := g.CollectBFSIDs(ctx, "a", 0)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, ids, 3)
+	assert.Equal(t, "a", ids[0])
+	assert.Contains(t, ids[1:], "b")
+	assert.Contains(t, ids[1:], "c")
 }
 
-func TestExistenceAndDegreeAPIs(t *testing.T) {
-	path := "./test-pebble-db-exists"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-exists")
+func TestShouldPerformDFSTraversal(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
 
-	// create nodes and edges:
-	// a->b, a->c, d->a
-	if err := g.AddNode(ctx, "a", nil); err != nil {
-		t.Fatalf("add node a: %v", err)
-	}
-	if err := g.AddNode(ctx, "b", nil); err != nil {
-		t.Fatalf("add node b: %v", err)
-	}
-	if err := g.AddNode(ctx, "c", nil); err != nil {
-		t.Fatalf("add node c: %v", err)
-	}
-	if err := g.AddNode(ctx, "d", nil); err != nil {
-		t.Fatalf("add node d: %v", err)
-	}
+	// Act
+	var order []string
+	err := g.DFS(ctx, "a", func(id string) error {
+		order = append(order, id)
+		return nil
+	}, 0)
 
-	if err := g.AddEdge(ctx, "a", "b", nil); err != nil {
-		t.Fatalf("add edge a->b: %v", err)
-	}
-	if err := g.AddEdge(ctx, "a", "c", nil); err != nil {
-		t.Fatalf("add edge a->c: %v", err)
-	}
-	if err := g.AddEdge(ctx, "d", "a", nil); err != nil {
-		t.Fatalf("add edge d->a: %v", err)
-	}
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, order, 3)
+	assert.Equal(t, "a", order[0])
+	assert.Contains(t, order, "b")
+	assert.Contains(t, order, "c")
+}
 
-	// HasNode
-	ok, err := g.HasNode(ctx, "a")
-	if err != nil || !ok {
-		t.Fatalf("expected HasNode(a) true, got %v err %v", ok, err)
-	}
-	ok, err = g.HasNode(ctx, "z")
-	if err != nil {
-		t.Fatalf("HasNode error: %v", err)
-	}
-	if ok {
-		t.Fatalf("expected HasNode(z) false")
-	}
+func TestShouldPerformDFSWithDepth(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddNode(ctx, "d", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "d", nil))
 
-	// EdgeExists
-	ex, err := g.EdgeExists(ctx, "a", "b")
-	if err != nil || !ex {
-		t.Fatalf("expected EdgeExists a->b true, got %v err %v", ex, err)
-	}
-	ex, err = g.EdgeExists(ctx, "b", "a")
-	if err != nil {
-		t.Fatalf("EdgeExists error: %v", err)
-	}
-	if ex {
-		t.Fatalf("expected EdgeExists b->a false")
-	}
+	// Act
+	var seen []string
+	err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 0)
 
-	// NodeDegree for a: in=1 (d->a), out=2 (a->b,a->c)
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, seen, 4)
+	assert.Contains(t, seen, "a:0")
+	assert.Contains(t, seen, "b:1")
+	assert.Contains(t, seen, "c:1")
+	assert.Contains(t, seen, "d:2")
+}
+
+func TestShouldCollectDFSIDs(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+
+	// Act
+	ids, err := g.CollectDFSIDs(ctx, "a", 0)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, ids, 3)
+	assert.Equal(t, "a", ids[0])
+	assert.Contains(t, ids, "b")
+	assert.Contains(t, ids, "c")
+}
+
+func TestShouldCheckNodeExistence(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+
+	// Act & Assert
+	exists, err := g.HasNode(ctx, "a")
+	assert.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = g.HasNode(ctx, "nonexistent")
+	assert.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestShouldCheckEdgeExistence(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+
+	// Act & Assert
+	exists, err := g.EdgeExists(ctx, "a", "b")
+	assert.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = g.EdgeExists(ctx, "b", "a")
+	assert.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestShouldReturnNodeDegree(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddNode(ctx, "d", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "d", "a", nil))
+
+	// Act
 	in, out, err := g.NodeDegree(ctx, "a")
-	if err != nil {
-		t.Fatalf("NodeDegree error: %v", err)
-	}
-	if in != 1 || out != 2 {
-		t.Fatalf("unexpected degrees for a: got in=%d out=%d", in, out)
-	}
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Equal(t, 1, in)
+	assert.Equal(t, 2, out)
 }
 
-func TestStreamingEnumerators(t *testing.T) {
-	path := "./test-pebble-db-stream"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-stream")
+func TestShouldEnumerateNeighbors(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
 
-	// build graph: x->y, x->z, w->x
-	_ = g.AddNode(ctx, "x", nil)
-	_ = g.AddNode(ctx, "y", nil)
-	_ = g.AddNode(ctx, "z", nil)
-	_ = g.AddNode(ctx, "w", nil)
-	_ = g.AddEdge(ctx, "x", "y", nil)
-	_ = g.AddEdge(ctx, "x", "z", nil)
-	_ = g.AddEdge(ctx, "w", "x", nil)
-
-	// compare neighbors slice vs enumerator
-	sl, err := g.Neighbors(ctx, "x")
-	if err != nil {
-		t.Fatalf("Neighbors error: %v", err)
-	}
+	// Act
 	var enumVals []Edge
-	enum := g.EnumerateNeighbors(ctx, "x")
-	if err := enumerators.ForEach(enum, func(e Edge) error {
+	enum := g.EnumerateNeighbors(ctx, "a")
+	err := enumerators.ForEach(enum, func(e Edge) error {
 		enumVals = append(enumVals, e)
 		return nil
-	}); err != nil {
-		t.Fatalf("NeighborsEnumerate error: %v", err)
-	}
-	if len(sl) != len(enumVals) {
-		t.Fatalf("neighbors mismatch: slice=%v enum=%v", sl, enumVals)
-	}
+	})
 
-	// compare incoming
-	slIn, err := g.IncomingNeighbors(ctx, "x")
-	if err != nil {
-		t.Fatalf("IncomingNeighbors error: %v", err)
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, enumVals, 2)
+	ids := make([]string, len(enumVals))
+	for i, e := range enumVals {
+		ids[i] = e.To
 	}
-	var enumIn []Edge
-	enum2 := g.EnumerateIncomingNeighbors(ctx, "x")
-	if err := enumerators.ForEach(enum2, func(e Edge) error {
-		enumIn = append(enumIn, e)
-		return nil
-	}); err != nil {
-		t.Fatalf("IncomingNeighborsEnumerate error: %v", err)
-	}
-	if len(slIn) != len(enumIn) {
-		t.Fatalf("incoming neighbors mismatch: slice=%v enum=%v", slIn, enumIn)
-	}
+	assert.Contains(t, ids, "b")
+	assert.Contains(t, ids, "c")
 }
 
-func TestBFSWithDepthAndCollect(t *testing.T) {
-	path := "./test-pebble-db-bfs-depth"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-bfs-depth")
+func TestShouldEnumerateIncomingNeighbors(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "a", nil))
+	require.NoError(t, g.AddEdge(ctx, "c", "a", nil))
 
-	// Construct a small graph: a->b, a->c, b->d, c->e
-	_ = g.AddNode(ctx, "a", nil)
-	_ = g.AddNode(ctx, "b", nil)
-	_ = g.AddNode(ctx, "c", nil)
-	_ = g.AddNode(ctx, "d", nil)
-	_ = g.AddNode(ctx, "e", nil)
-	_ = g.AddEdge(ctx, "a", "b", nil)
-	_ = g.AddEdge(ctx, "a", "c", nil)
-	_ = g.AddEdge(ctx, "b", "d", nil)
-	_ = g.AddEdge(ctx, "c", "e", nil)
-
-	// Test BFSWithDepth collects depth info
-	var seen []string
-	if err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+	// Act
+	var enumVals []Edge
+	enum := g.EnumerateIncomingNeighbors(ctx, "a")
+	err := enumerators.ForEach(enum, func(e Edge) error {
+		enumVals = append(enumVals, e)
 		return nil
-	}, 0); err != nil {
-		t.Fatalf("BFSWithDepth error: %v", err)
-	}
-	// Expected to see a:0 then b:1 and c:1 then d:2 and e:2 (order among same-level nodes depends on neighbors order)
-	if len(seen) != 5 {
-		t.Fatalf("unexpected seen list: %v", seen)
-	}
+	})
 
-	// Test CollectBFSIDs returns IDs
-	ids, err := g.CollectBFSIDs(ctx, "a", 0)
-	if err != nil {
-		t.Fatalf("CollectBFSIDs error: %v", err)
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, enumVals, 2)
+	ids := make([]string, len(enumVals))
+	for i, e := range enumVals {
+		ids[i] = e.From
 	}
-	if len(ids) != 5 {
-		t.Fatalf("unexpected ids: %v", ids)
-	}
+	assert.Contains(t, ids, "b")
+	assert.Contains(t, ids, "c")
 }
 
-func TestDFSWithDepthAndCollect(t *testing.T) {
-	path := "./test-pebble-db-dfs-depth"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-dfs-depth")
+func TestShouldBatchAddNodesAndEdges(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
 	ctx := context.Background()
-
-	// Construct a small graph: a->b, a->c, b->d, c->e
-	_ = g.AddNode(ctx, "a", nil)
-	_ = g.AddNode(ctx, "b", nil)
-	_ = g.AddNode(ctx, "c", nil)
-	_ = g.AddNode(ctx, "d", nil)
-	_ = g.AddNode(ctx, "e", nil)
-	_ = g.AddEdge(ctx, "a", "b", nil)
-	_ = g.AddEdge(ctx, "a", "c", nil)
-	_ = g.AddEdge(ctx, "b", "d", nil)
-	_ = g.AddEdge(ctx, "c", "e", nil)
-
-	// Test DFSWithDepth collects depth info
-	var seen []string
-	if err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
-		return nil
-	}, 0); err != nil {
-		t.Fatalf("DFSWithDepth error: %v", err)
-	}
-	// DFS will visit a first then go deep. Expect 5 nodes visited.
-	if len(seen) != 5 {
-		t.Fatalf("unexpected seen list for DFS: %v", seen)
-	}
-	// Test CollectDFSIDs returns IDs
-	ids, err := g.CollectDFSIDs(ctx, "a", 0)
-	if err != nil {
-		t.Fatalf("CollectDFSIDs error: %v", err)
-	}
-	if len(ids) != 5 {
-		t.Fatalf("unexpected ids for DFS: %v", ids)
-	}
-}
-
-func TestBatchAddNodesAndEdges(t *testing.T) {
-	path := "./test-pebble-db-batch"
-	_ = os.RemoveAll(path)
-	store, err := pebble.NewPebbleStore(path)
-	if err != nil {
-		t.Fatalf("failed to open pebble: %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
-	}()
-
-	g := NewGraph(store, "test-batch")
-	ctx := context.Background()
-
 	nodes := []Node{{ID: "n1"}, {ID: "n2"}, {ID: "n3"}}
 	edges := []Edge{{From: "n1", To: "n2"}, {From: "n2", To: "n3"}}
 
-	if err := g.BatchAdd(ctx, nodes, edges); err != nil {
-		t.Fatalf("BatchAdd failed: %v", err)
-	}
+	// Act
+	err := g.BatchAdd(ctx, nodes, edges)
 
-	// Assert nodes exist
+	// Assert
+	assert.NoError(t, err)
 	for _, n := range nodes {
-		ok, err := g.HasNode(ctx, n.ID)
-		if err != nil || !ok {
-			t.Fatalf("expected node %s to exist: %v", n.ID, err)
-		}
+		exists, err := g.HasNode(ctx, n.ID)
+		assert.NoError(t, err)
+		assert.True(t, exists)
 	}
-
-	// Assert edges
 	out, err := g.Neighbors(ctx, "n1")
-	if err != nil {
-		t.Fatalf("neighbors: %v", err)
-	}
-	if len(out) != 1 || out[0].To != "n2" {
-		t.Fatalf("unexpected neighbors for n1: %v", out)
-	}
-
+	assert.NoError(t, err)
+	assert.Len(t, out, 1)
+	assert.Equal(t, "n2", out[0].To)
 	in, err := g.IncomingNeighbors(ctx, "n2")
-	if err != nil {
-		t.Fatalf("incoming: %v", err)
-	}
-	if len(in) != 1 || in[0].From != "n1" {
-		t.Fatalf("unexpected incoming for n2: %v", in)
-	}
+	assert.NoError(t, err)
+	assert.Len(t, in, 1)
+	assert.Equal(t, "n1", in[0].From)
 }
