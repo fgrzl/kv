@@ -15,10 +15,21 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var _ kv.KV = (*Store)(nil)
+// RedisClient defines the interface for Redis operations used in unit tests.
+type RedisClient interface {
+	Ping(ctx context.Context) *redis.StatusCmd
+	FlushDB(ctx context.Context) *redis.StatusCmd
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Pipeline() redis.Pipeliner
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
+	Close() error
+}
 
 type Store struct {
-	client *redis.Client
+	client RedisClient
 	prefix string
 	mu     sync.Mutex
 }
@@ -42,6 +53,12 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 
 	slog.DebugContext(ctx, "redis client initialized", "addr", cfg.Addr, "db", cfg.DB)
 	return &Store{client: client, prefix: cfg.Prefix}, nil
+}
+
+// NewRedisStoreWithClient creates a new Redis-backed kv.KV store with a provided client.
+// This is primarily for testing purposes.
+func NewRedisStoreWithClient(client RedisClient, prefix string) kv.KV {
+	return &Store{client: client, prefix: prefix}
 }
 
 func (r *Store) Clear() {

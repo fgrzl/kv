@@ -11,15 +11,56 @@ import (
 	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
 
+// AzureTableClient defines the interface for Azure Table operations used in unit tests.
+type AzureTableClient interface {
+	CreateTable(ctx context.Context, options *aztables.CreateTableOptions) (interface{}, error)
+	GetEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.GetEntityOptions) (aztables.GetEntityResponse, error)
+	UpsertEntity(ctx context.Context, entity []byte, options *aztables.UpsertEntityOptions) (interface{}, error)
+	AddEntity(ctx context.Context, entity []byte, options *aztables.AddEntityOptions) (interface{}, error)
+	DeleteEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.DeleteEntityOptions) (interface{}, error)
+	NewListEntitiesPager(options *aztables.ListEntitiesOptions) interface{}
+	SubmitTransaction(ctx context.Context, operations []aztables.TransactionAction, options *aztables.SubmitTransactionOptions) (interface{}, error)
+}
+
+// realAzureClient wraps *aztables.Client to implement AzureTableClient.
+type realAzureClient struct {
+	*aztables.Client
+}
+
+func (r *realAzureClient) CreateTable(ctx context.Context, options *aztables.CreateTableOptions) (interface{}, error) {
+	return r.Client.CreateTable(ctx, options)
+}
+
+func (r *realAzureClient) UpsertEntity(ctx context.Context, entity []byte, options *aztables.UpsertEntityOptions) (interface{}, error) {
+	return r.Client.UpsertEntity(ctx, entity, options)
+}
+
+func (r *realAzureClient) AddEntity(ctx context.Context, entity []byte, options *aztables.AddEntityOptions) (interface{}, error) {
+	return r.Client.AddEntity(ctx, entity, options)
+}
+
+func (r *realAzureClient) DeleteEntity(ctx context.Context, partitionKey, rowKey string, options *aztables.DeleteEntityOptions) (interface{}, error) {
+	return r.Client.DeleteEntity(ctx, partitionKey, rowKey, options)
+}
+
+func (r *realAzureClient) NewListEntitiesPager(options *aztables.ListEntitiesOptions) interface{} {
+	return r.Client.NewListEntitiesPager(options)
+}
+
+func (r *realAzureClient) SubmitTransaction(ctx context.Context, operations []aztables.TransactionAction, options *aztables.SubmitTransactionOptions) (interface{}, error) {
+	return r.Client.SubmitTransaction(ctx, operations, options)
+}
+
 type store struct {
 	options *TableProviderOptions
-	client  *aztables.Client
+	client  AzureTableClient
 }
 
 var _ kv.KV = (*store)(nil)
@@ -39,11 +80,21 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create table client: %w", err)
 	}
-	s := &store{options: options, client: client}
+	s := &store{options: options, client: &realAzureClient{Client: client}}
 	if err := s.createTableIfNotExists(context.Background()); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// NewAzureStoreWithClient creates a new Azure-backed kv.KV store with a provided client.
+// This is primarily for testing purposes.
+func NewAzureStoreWithClient(client AzureTableClient, opts ...StoreOption) (kv.KV, error) {
+	options := &TableProviderOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+	return &store{options: options, client: client}, nil
 }
 
 func (s *store) createTableIfNotExists(ctx context.Context) error {
@@ -56,11 +107,20 @@ func (s *store) createTableIfNotExists(ctx context.Context) error {
 	return fmt.Errorf("failed to create table: %w", err)
 }
 
+// responseError interface for error checking
+type responseError interface {
+	StatusCode() int
+}
+
 func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
 	resp, err := s.client.GetEntity(ctx, pk.PartitionKey.ToHexString(), pk.RowKey.ToHexString(), nil)
 	if err != nil {
-		var respErr *azcore.ResponseError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
+		var azErr *azcore.ResponseError
+		if errors.As(err, &azErr) && azErr.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+		var respErr responseError
+		if errors.As(err, &respErr) && respErr.StatusCode() == http.StatusNotFound {
 			return nil, nil
 		}
 		slog.ErrorContext(ctx, "failed to get entity", "pk", pk, "err", err)
@@ -111,8 +171,12 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 		return err
 	}
 	_, err = s.client.AddEntity(ctx, entityJSON, nil)
-	var respErr *azcore.ResponseError
-	if errors.As(err, &respErr) && respErr.StatusCode == http.StatusConflict {
+	var azErr *azcore.ResponseError
+	if errors.As(err, &azErr) && azErr.StatusCode == http.StatusConflict {
+		return kv.ErrAlreadyExists
+	}
+	var respErr responseError
+	if errors.As(err, &respErr) && respErr.StatusCode() == http.StatusConflict {
 		return kv.ErrAlreadyExists
 	}
 	if err != nil {
@@ -135,8 +199,12 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 
 func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	_, err := s.client.DeleteEntity(ctx, pk.PartitionKey.ToHexString(), pk.RowKey.ToHexString(), nil)
-	var respErr *azcore.ResponseError
-	if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
+	var azErr *azcore.ResponseError
+	if errors.As(err, &azErr) && azErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	var respErr responseError
+	if errors.As(err, &respErr) && respErr.StatusCode() == http.StatusNotFound {
 		return nil
 	}
 	if err != nil {
@@ -232,7 +300,7 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 	pager := s.client.NewListEntitiesPager(&aztables.ListEntitiesOptions{
 		Top:    normalizeLimit(args.Limit),
 		Filter: filter,
-	})
+	}).(*runtime.Pager[aztables.ListEntitiesResponse])
 	return AzureEnumerator(ctx, pager, args.Limit)
 }
 
