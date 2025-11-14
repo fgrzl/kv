@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -84,25 +85,36 @@ func NewTree(store kv.KV, opts ...Option) *Tree {
 
 // Build builds and persists a Merkle tree from a leaf enumerator.
 func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) error {
+	slog.InfoContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
 	if err := m.pruneOldNodes(ctx, stage, space); err != nil {
+		slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
 		return err
 	}
 	currNodes, err := m.persistLeaves(ctx, stage, space, leaves)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to persist leaves", "stage", stage, "space", space, "err", err)
 		return err
 	}
 	if len(currNodes) == 0 {
+		slog.InfoContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
 		return nil
 	}
 	currNodes, err = m.padLeaves(ctx, stage, space, currNodes)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to pad leaves", "stage", stage, "space", space, "err", err)
 		return err
 	}
 	currNodes, err = m.persistInternalLevels(ctx, stage, space, currNodes)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to persist internal levels", "stage", stage, "space", space, "err", err)
 		return err
 	}
-	return m.persistRoot(ctx, stage, space, currNodes)
+	if err := m.persistRoot(ctx, stage, space, currNodes); err != nil {
+		slog.ErrorContext(ctx, "failed to persist root", "stage", stage, "space", space, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "Merkle tree build completed", "stage", stage, "space", space, "leaves", len(currNodes))
+	return nil
 }
 
 // Diff returns leaves that are present in 'curr' but not in 'prev' (one-way diff).
@@ -141,9 +153,16 @@ func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, []
 
 // Prune removes all Merkle nodes for the given stage and space.
 func (m *Tree) Prune(ctx context.Context, stage, space string) error {
+	slog.InfoContext(ctx, "pruning Merkle tree", "stage", stage, "space", space)
 	partition := lexkey.Encode("merkle", stage, space)
 	rangeKey := lexkey.NewRangeKeyFull(partition)
-	return m.store.RemoveRange(ctx, rangeKey)
+	err := m.store.RemoveRange(ctx, rangeKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to prune Merkle tree", "stage", stage, "space", space, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "Merkle tree pruned", "stage", stage, "space", space)
+	return nil
 }
 
 // --- Build Helper Methods ---

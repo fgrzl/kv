@@ -51,7 +51,7 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 		return nil, err
 	}
 
-	slog.DebugContext(ctx, "redis client initialized", "addr", cfg.Addr, "db", cfg.DB)
+	slog.InfoContext(ctx, "Redis store initialized", "addr", cfg.Addr, "db", cfg.DB, "prefix", cfg.Prefix)
 	return &Store{client: client, prefix: cfg.Prefix}, nil
 }
 

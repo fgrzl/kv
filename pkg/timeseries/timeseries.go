@@ -3,6 +3,7 @@ package timeseries
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"math"
 
 	"github.com/fgrzl/enumerators"
@@ -88,28 +89,39 @@ func (ts *TimeSeries) Append(ctx context.Context, series string, timestamp int64
 	s := Sample{Series: series, Timestamp: timestamp, Value: value}
 	b, err := json.Marshal(s)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to marshal timeseries sample", "series", series, "timestamp", timestamp, "err", err)
 		return err
 	}
 	pk := lexkey.NewPrimaryKey(ts.partition(series), ts.encodeRowKeyForTimestamp(timestamp))
-	return ts.store.Put(ctx, &kv.Item{PK: pk, Value: b})
+	err = ts.store.Put(ctx, &kv.Item{PK: pk, Value: b})
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to store timeseries sample", "series", series, "timestamp", timestamp, "err", err)
+		return err
+	}
+	slog.DebugContext(ctx, "timeseries sample appended", "series", series, "timestamp", timestamp)
+	return nil
 }
 
 // QueryRange returns samples for series within [from, to) ordered by timestamp ascending.
 func (ts *TimeSeries) QueryRange(ctx context.Context, series string, from, to int64) ([]Sample, error) {
+	slog.DebugContext(ctx, "querying timeseries range", "series", series, "from", from, "to", to)
 	part := ts.partition(series)
 	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
 	if !ok {
+		slog.DebugContext(ctx, "invalid timeseries range", "series", series, "from", from, "to", to)
 		return nil, nil
 	}
 	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Scan}
 	items, err := ts.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to query timeseries", "series", series, "from", from, "to", to, "err", err)
 		return nil, err
 	}
 	var out []Sample
 	for _, it := range items {
 		var s Sample
 		if err := json.Unmarshal(it.Value, &s); err != nil {
+			slog.WarnContext(ctx, "skipping malformed timeseries sample", "series", series, "err", err)
 			continue
 		}
 		// Ensure returned samples honor the requested bounds since underlying
@@ -118,13 +130,21 @@ func (ts *TimeSeries) QueryRange(ctx context.Context, series string, from, to in
 			out = append(out, s)
 		}
 	}
+	slog.DebugContext(ctx, "timeseries query completed", "series", series, "samples", len(out))
 	return out, nil
 }
 
 // DeleteSeries removes all samples for a series.
 func (ts *TimeSeries) DeleteSeries(ctx context.Context, series string) error {
+	slog.InfoContext(ctx, "deleting timeseries series", "series", series)
 	rangeKey := lexkey.NewRangeKeyFull(ts.partition(series))
-	return ts.store.RemoveRange(ctx, rangeKey)
+	err := ts.store.RemoveRange(ctx, rangeKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to delete timeseries series", "series", series, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "timeseries series deleted", "series", series)
+	return nil
 }
 
 // EnumerateRange streams samples for `series` within [from, to) ordered by timestamp ascending.

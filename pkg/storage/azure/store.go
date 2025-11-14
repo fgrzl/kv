@@ -84,6 +84,7 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 	if err := s.createTableIfNotExists(context.Background()); err != nil {
 		return nil, err
 	}
+	slog.InfoContext(context.Background(), "Azure table store initialized", "table", options.Table)
 	return s, nil
 }
 

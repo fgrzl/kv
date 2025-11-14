@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -106,25 +107,39 @@ func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error 
 	sn := storedNode{ID: id, Meta: encodeMeta(meta)}
 	b, err := json.Marshal(sn)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to marshal node", "id", id, "err", err)
 		return err
 	}
 	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
 	// Use Insert to avoid silently overwriting existing nodes.
-	return g.store.Insert(ctx, &kv.Item{PK: pk, Value: b})
+	err = g.store.Insert(ctx, &kv.Item{PK: pk, Value: b})
+	if err != nil {
+		slog.WarnContext(ctx, "failed to add node", "id", id, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "node added", "id", id, "graph", g.name)
+	return nil
 }
 
 func (g *graphStore) GetNode(ctx context.Context, id string) (*Node, error) {
 	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
 	item, err := g.store.Get(ctx, pk)
-	if err != nil || item == nil {
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to get node", "id", id, "err", err)
 		return nil, err
+	}
+	if item == nil {
+		slog.DebugContext(ctx, "node not found", "id", id)
+		return nil, nil
 	}
 	var sn storedNode
 	if err := json.Unmarshal(item.Value, &sn); err != nil {
+		slog.ErrorContext(ctx, "failed to unmarshal node", "id", id, "err", err)
 		return nil, err
 	}
 	meta, err := decodeMeta(sn.Meta)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to decode node meta", "id", id, "err", err)
 		return nil, err
 	}
 	return &Node{ID: sn.ID, Meta: meta}, nil
@@ -143,6 +158,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 			return nil
 		}
 		if err := g.store.Batch(ctx, batch); err != nil {
+			slog.ErrorContext(ctx, "failed to flush delete batch", "node", id, "batch_size", len(batch), "err", err)
 			return err
 		}
 		batch = batch[:0]
@@ -161,6 +177,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
 			// skip malformed entries
+			slog.WarnContext(ctx, "skipping malformed edge during delete", "node", id, "err", err)
 			return nil
 		}
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(id), lexkey.Encode(se.To))
@@ -172,6 +189,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		}
 		return nil
 	}); err != nil {
+		slog.ErrorContext(ctx, "failed to enumerate outgoing edges", "node", id, "err", err)
 		return err
 	}
 
@@ -182,6 +200,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	if err := enumerators.ForEach(inEnum, func(it *kv.Item) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
+			slog.ErrorContext(ctx, "failed to unmarshal incoming edge", "node", id, "err", err)
 			return nil
 		}
 		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(id), lexkey.Encode(se.From))
@@ -193,10 +212,15 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		}
 		return nil
 	}); err != nil {
+		slog.ErrorContext(ctx, "failed to enumerate incoming edges", "node", id, "err", err)
 		return err
 	}
 
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	slog.InfoContext(ctx, "node deleted", "id", id, "graph", g.name)
+	return nil
 }
 
 func (g *graphStore) AddEdge(ctx context.Context, from, to string, meta []byte) error {
@@ -268,6 +292,7 @@ func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, 
 }
 
 func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string) error, limit int) error {
+	slog.DebugContext(ctx, "starting BFS traversal", "start", start, "limit", limit, "graph", g.name)
 	// simple queue-based BFS with pre-allocation optimizations
 	queue := make([]string, 0, 100) // pre-allocate
 	queue = append(queue, start)
@@ -277,6 +302,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
+			slog.DebugContext(ctx, "BFS cancelled", "visited", visited)
 			return ctx.Err()
 		default:
 		}
@@ -286,15 +312,18 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 			continue
 		}
 		if err := visit(cur); err != nil {
+			slog.ErrorContext(ctx, "BFS visit failed", "node", cur, "err", err)
 			return err
 		}
 		seen[cur] = struct{}{}
 		visited++
 		if limit > 0 && visited >= limit {
+			slog.DebugContext(ctx, "BFS limit reached", "visited", visited, "limit", limit)
 			return nil
 		}
 		nbrs, err := g.Neighbors(ctx, cur)
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to get neighbors", "node", cur, "err", err)
 			return err
 		}
 		for _, e := range nbrs {
@@ -303,6 +332,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 			}
 		}
 	}
+	slog.DebugContext(ctx, "BFS completed", "visited", visited)
 	return nil
 }
 
@@ -498,6 +528,7 @@ func (g *graphStore) CollectDFSIDs(ctx context.Context, start string, limit int)
 // and for each edge writes forward and reverse entries. It attempts a single
 // atomic batch when supported and falls back to chunked commits.
 func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) error {
+	slog.InfoContext(ctx, "starting batch add", "nodes", len(nodes), "edges", len(edges), "graph", g.name)
 	// Pre-allocate with estimated capacity
 	ops := make([]*kv.BatchItem, 0, len(nodes)+2*len(edges))
 
@@ -506,6 +537,7 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 		sn := storedNode{ID: n.ID, Meta: encodeMeta(n.Meta)}
 		b, err := json.Marshal(sn)
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to marshal node in batch", "id", n.ID, "err", err)
 			return err
 		}
 		pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(n.ID))
@@ -517,6 +549,7 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 		se := storedEdge{From: e.From, To: e.To, Meta: encodeMeta(e.Meta)}
 		b, err := json.Marshal(se)
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to marshal edge in batch", "from", e.From, "to", e.To, "err", err)
 			return err
 		}
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(e.From), lexkey.Encode(e.To))
@@ -526,15 +559,18 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 	}
 
 	if len(ops) == 0 {
+		slog.DebugContext(ctx, "batch add empty", "graph", g.name)
 		return nil
 	}
 
 	// Try one Batch commit first.
 	if err := g.store.Batch(ctx, ops); err == nil {
+		slog.InfoContext(ctx, "batch add completed", "operations", len(ops), "graph", g.name)
 		return nil
 	}
 
 	// Fallback to chunked commits
+	slog.WarnContext(ctx, "falling back to chunked batch commits", "operations", len(ops))
 	const chunkSize = 1000
 	for i := 0; i < len(ops); i += chunkSize {
 		end := i + chunkSize
@@ -542,9 +578,11 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 			end = len(ops)
 		}
 		if err := g.store.Batch(ctx, ops[i:end]); err != nil {
+			slog.ErrorContext(ctx, "chunked batch failed", "chunk_start", i, "chunk_end", end, "err", err)
 			return err
 		}
 	}
+	slog.InfoContext(ctx, "chunked batch add completed", "operations", len(ops), "graph", g.name)
 	return nil
 }
 

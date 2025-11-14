@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -43,9 +44,14 @@ func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
 	options := NewOptions(opts...) // returns *pebble.Options
 	db, err := pebble.Open(path, options)
 	if err != nil {
+		return nil, fmt.Errorf("failed to open pebble database: %w", err)
+	}
+	store, err := NewPebbleStoreWithDB(db)
+	if err != nil {
 		return nil, err
 	}
-	return NewPebbleStoreWithDB(db)
+	slog.InfoContext(context.Background(), "Pebble store initialized", "path", path)
+	return store, nil
 }
 
 // NewPebbleStoreWithDB creates a new Pebble-backed kv.KV store with a provided database.
