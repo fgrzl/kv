@@ -1,58 +1,71 @@
 # Copilot Instructions for Go Libraries
 
-Welcome, Copilot. Please follow these instructions to ensure clean, idiomatic, and maintainable Go code.
+Welcome, Copilot! These guidelines ensure we write clean, idiomatic, and maintainable Go code that follows best practices for library development.
 
 ## 🧠 Code Style
 
-* Always write **idiomatic Go**. Use `gofmt`, idiomatic naming, and avoid unnecessary abstractions.
-* Favor small, focused functions and minimal dependencies.
-* Always use `context.Context` in public APIs where cancellation or timeouts may apply.
-* Prefer `errors.Is` / `errors.As` for error handling.
-* Return early and avoid deep nesting when possible.
+* Write **idiomatic Go** code: Use `gofmt` for formatting, follow standard naming conventions, and avoid unnecessary abstractions.
+* Favor small, focused functions with minimal dependencies.
+* Use `context.Context` in all public APIs for proper cancellation and timeout handling.
+* Prefer `errors.Is` and `errors.As` for robust error checking and handling.
+* Return early to reduce nesting and improve readability.
+* Design clean interfaces: Use interfaces for abstraction when they add value, but prefer concrete types when possible to avoid over-engineering.
 
 ## 🧪 Testing Guidelines
 
-* All code must be covered with meaningful tests.
-* All test should test a single behavior. 
-  - Tests that have multiple Act operations should be split into smaller tests
-  - Tests that cover multiple inputs for the same act/assert should use table driven semantics
-
-* Use Go’s standard `testing` package with `testify/assert` for assertions.
-
-* Write tests in **behavioral style**, using names like:
+* Ensure comprehensive test coverage with meaningful, behavioral tests.
+* Each test should verify a single behavior:
+  - Split tests with multiple "Act" operations into separate tests.
+  - Use table-driven tests for multiple inputs with the same behavior.
+* Use Go's standard `testing` package supplemented by `testify/assert` for assertions.
+* Write tests in behavioral style with descriptive names:
 
   ```go
   func TestShouldReturnErrorWhenUserIsInvalid(t *testing.T)
   func TestShouldStoreResultGivenValidInput(t *testing.T)
   ```
 
-* Inside tests, follow this structure with clear comments:
+* Structure tests clearly with comments:
 
   ```go
   // Arrange
   require.NoError(t, err)
-  ...
+  // ... setup code ...
 
   // Act
-  ...
+  result, err := someFunction(input)
 
   // Assert
-  assert.Equal(t, expected, actual)
+  assert.NoError(t, err)
+  assert.Equal(t, expected, result)
   ```
 
-* Prefer table-driven tests when appropriate.
-
+* Include benchmarks for performance-critical code to measure and optimize.
+* Test edge cases, error conditions, and concurrent scenarios where applicable.
 
 ## 📚 Documentation
 
-* All exported functions, methods, and types must have GoDoc-style comments.
-* Start comments with the name of the item being documented.
-* Maintain accurate documentation in the /docs directory
-* Ensure the main README.md provides clear, concise documentation to help new developers understand how to use the project effectively.
+* Provide GoDoc-style comments for all exported functions, methods, and types.
+* Start each comment with the name of the item being documented.
+* Maintain up-to-date documentation in the `/docs` directory.
+* Ensure the main `README.md` offers clear, concise guidance for new developers, including installation, usage examples, and troubleshooting.
 
 ## 🩵 Logging
 
-* Use `slog` for structured logging.
-* Always pass `context.Context` to log calls.
+* Use `slog` for structured, context-aware logging.
+* Always pass `context.Context` to logging calls for proper tracing and correlation.
+* Log at appropriate levels: debug for development, info for normal operations, warn for recoverable issues, and error for failures.
 
-Thanks for helping us write clean and idiomatic Go!
+## ⚡ Performance & Concurrency
+
+* Write efficient code: Minimize allocations, use appropriate data structures, and profile performance bottlenecks.
+* Handle concurrency safely: Use channels, sync primitives, or atomic operations appropriately. Avoid race conditions.
+* Consider streaming and iterators for large datasets to reduce memory usage.
+
+## 🔒 Security & Dependencies
+
+* Keep dependencies minimal and up-to-date; audit for vulnerabilities.
+* Avoid exposing sensitive information in logs or errors.
+* Follow secure coding practices: Validate inputs, handle errors gracefully, and avoid common pitfalls like SQL injection or path traversal.
+
+Thanks for helping us build high-quality Go libraries!
