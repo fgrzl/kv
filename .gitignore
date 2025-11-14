@@ -28,3 +28,5 @@ build/
 *.bak
 *.old
 .DS_Store
+coverage
+coverage.html

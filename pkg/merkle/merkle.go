@@ -6,11 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
+
+var tracer = otel.Tracer("github.com/fgrzl/kv/merkle")
 
 // Branch is an in-memory Merkle node (for tree construction only).
 type Branch struct {
@@ -84,25 +92,55 @@ func NewTree(store kv.KV, opts ...Option) *Tree {
 
 // Build builds and persists a Merkle tree from a leaf enumerator.
 func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) error {
+	ctx, span := tracer.Start(ctx, "merkle.Build",
+		trace.WithAttributes(
+			attribute.String("stage", stage),
+			attribute.String("space", space),
+		))
+	defer span.End()
+
+	slog.InfoContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
 	if err := m.pruneOldNodes(ctx, stage, space); err != nil {
+		slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	currNodes, err := m.persistLeaves(ctx, stage, space, leaves)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to persist leaves", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if len(currNodes) == 0 {
+		slog.InfoContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
+		span.SetAttributes(attribute.Int("leaves", 0))
 		return nil
 	}
 	currNodes, err = m.padLeaves(ctx, stage, space, currNodes)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to pad leaves", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	currNodes, err = m.persistInternalLevels(ctx, stage, space, currNodes)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to persist internal levels", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	return m.persistRoot(ctx, stage, space, currNodes)
+	if err := m.persistRoot(ctx, stage, space, currNodes); err != nil {
+		slog.ErrorContext(ctx, "failed to persist root", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	slog.InfoContext(ctx, "Merkle tree build completed", "stage", stage, "space", space, "leaves", len(currNodes))
+	span.SetAttributes(attribute.Int("leaves", len(currNodes)))
+	return nil
 }
 
 // Diff returns leaves that are present in 'curr' but not in 'prev' (one-way diff).
@@ -141,9 +179,16 @@ func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, []
 
 // Prune removes all Merkle nodes for the given stage and space.
 func (m *Tree) Prune(ctx context.Context, stage, space string) error {
+	slog.InfoContext(ctx, "pruning Merkle tree", "stage", stage, "space", space)
 	partition := lexkey.Encode("merkle", stage, space)
 	rangeKey := lexkey.NewRangeKeyFull(partition)
-	return m.store.RemoveRange(ctx, rangeKey)
+	err := m.store.RemoveRange(ctx, rangeKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to prune Merkle tree", "stage", stage, "space", space, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "Merkle tree pruned", "stage", stage, "space", space)
+	return nil
 }
 
 // --- Build Helper Methods ---
@@ -155,11 +200,11 @@ func (m *Tree) pruneOldNodes(ctx context.Context, stage, space string) error {
 }
 
 func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) ([]Branch, error) {
-	var (
-		currNodes []Branch
-		index     int
-		batch     = make([]*kv.BatchItem, 0, m.batchSize)
-	)
+	// Pre-allocate with reasonable capacity
+	currNodes := make([]Branch, 0, 1000)
+	batch := make([]*kv.BatchItem, 0, m.batchSize)
+
+	index := 0
 	writeLeafNode := func(idx int, val []byte) error {
 		pk := pk(stage, space, 0, idx)
 		batch = append(batch, &kv.BatchItem{PK: pk, Value: val, Op: kv.Put})
@@ -167,10 +212,11 @@ func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves en
 			if err := m.store.Batch(ctx, batch); err != nil {
 				return err
 			}
-			batch = batch[:0]
+			batch = batch[:0] // Reset batch
 		}
 		return nil
 	}
+
 	if err := enumerators.ForEach(leaves, func(leaf Leaf) error {
 		val, err := json.Marshal(leaf)
 		if err != nil {
@@ -185,6 +231,7 @@ func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves en
 	}); err != nil {
 		return nil, err
 	}
+
 	if len(batch) > 0 {
 		if err := m.store.Batch(ctx, batch); err != nil {
 			return nil, err
@@ -247,10 +294,12 @@ func (m *Tree) persistInternalLevels(ctx context.Context, stage, space string, n
 }
 
 func (m *Tree) hashNodeLevel(stage, space string, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
-	var (
-		next  []Branch
-		batch []*kv.BatchItem
-	)
+	numGroups := (len(nodes) + m.branching - 1) / m.branching
+
+	// Pre-allocate slices for better performance
+	next := make([]Branch, 0, numGroups)
+	batch := make([]*kv.BatchItem, 0, numGroups)
+
 	for i := 0; i < len(nodes); i += m.branching {
 		end := min(i+m.branching, len(nodes))
 		sum := hashNodes(nodes[i:end])
@@ -290,7 +339,15 @@ func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodeP
 	currHash, currVal, errCurr := m.getHash(ctx, curr, space, ref)
 
 	if errPrev != nil || errCurr != nil {
-		return enumerators.Error[Leaf](fmt.Errorf("get hash error: %w%w", errPrev, errCurr))
+		var combined error
+		if errPrev != nil && errCurr != nil {
+			combined = fmt.Errorf("get hash errors: prev=%v curr=%v", errPrev, errCurr)
+		} else if errPrev != nil {
+			combined = fmt.Errorf("get hash prev: %w", errPrev)
+		} else {
+			combined = fmt.Errorf("get hash curr: %w", errCurr)
+		}
+		return enumerators.Error[Leaf](combined)
 	}
 
 	// Edge: Both trees empty at root

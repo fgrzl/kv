@@ -5,19 +5,31 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/fgrzl/enumerators"
-	"github.com/fgrzl/kv"
+	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 	"github.com/redis/go-redis/v9"
 )
 
-var _ kv.KV = (*Store)(nil)
+// RedisClient defines the interface for Redis operations used in unit tests.
+type RedisClient interface {
+	Ping(ctx context.Context) *redis.StatusCmd
+	FlushDB(ctx context.Context) *redis.StatusCmd
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	Pipeline() redis.Pipeliner
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
+	Close() error
+}
 
 type Store struct {
-	client *redis.Client
+	client RedisClient
 	prefix string
 	mu     sync.Mutex
 }
@@ -39,16 +51,43 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 		return nil, err
 	}
 
-	slog.DebugContext(ctx, "redis client initialized", "addr", cfg.Addr, "db", cfg.DB)
+	slog.InfoContext(ctx, "Redis store initialized", "addr", cfg.Addr, "db", cfg.DB, "prefix", cfg.Prefix)
 	return &Store{client: client, prefix: cfg.Prefix}, nil
+}
+
+// NewRedisStoreWithClient creates a new Redis-backed kv.KV store with a provided client.
+// This is primarily for testing purposes.
+func NewRedisStoreWithClient(client RedisClient, prefix string) kv.KV {
+	return &Store{client: client, prefix: prefix}
 }
 
 func (r *Store) Clear() {
 	_ = r.client.FlushDB(context.Background()).Err()
 }
 
+// mkKeyHex builds the stored key string (hex), applying prefix if present.
+func (r *Store) mkKeyHex(pk lexkey.PrimaryKey) string {
+	hex := pk.Encode().ToHexString()
+	if r.prefix == "" {
+		return hex
+	}
+	return r.prefix + ":" + hex
+}
+
+// stripPrefix removes the configured prefix from a stored key, if present.
+func (r *Store) stripPrefix(stored string) string {
+	if r.prefix == "" {
+		return stored
+	}
+	p := r.prefix + ":"
+	if strings.HasPrefix(stored, p) {
+		return stored[len(p):]
+	}
+	return stored
+}
+
 func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
-	key := pk.Encode().ToHexString()
+	key := r.mkKeyHex(pk)
 	val, err := r.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
@@ -67,7 +106,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 	pipe := r.client.Pipeline()
 	cmds := make([]*redis.StringCmd, len(keys))
 	for i, pk := range keys {
-		cmds[i] = pipe.Get(ctx, pk.Encode().ToHexString())
+		cmds[i] = pipe.Get(ctx, r.mkKeyHex(pk))
 	}
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
@@ -91,7 +130,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 }
 
 func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
-	key := item.PK.Encode().ToHexString()
+	key := r.mkKeyHex(item.PK)
 	ok, err := r.client.SetNX(ctx, key, item.Value, 0).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis insert failed", "key", key, "err", err)
@@ -104,7 +143,7 @@ func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
 }
 
 func (r *Store) Put(ctx context.Context, item *kv.Item) error {
-	key := item.PK.Encode().ToHexString()
+	key := r.mkKeyHex(item.PK)
 	err := r.client.Set(ctx, key, item.Value, 0).Err()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis put failed", "key", key, "err", err)
@@ -114,7 +153,7 @@ func (r *Store) Put(ctx context.Context, item *kv.Item) error {
 }
 
 func (r *Store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
-	key := pk.Encode().ToHexString()
+	key := r.mkKeyHex(pk)
 	err := r.client.Del(ctx, key).Err()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis delete failed", "key", key, "err", err)
@@ -129,7 +168,7 @@ func (r *Store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 	}
 	strKeys := make([]string, len(keys))
 	for i, pk := range keys {
-		strKeys[i] = pk.Encode().ToHexString()
+		strKeys[i] = r.mkKeyHex(pk)
 	}
 	if err := r.client.Del(ctx, strKeys...).Err(); err != nil {
 		slog.ErrorContext(ctx, "redis batch delete failed", "count", len(keys), "err", err)
@@ -139,17 +178,30 @@ func (r *Store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 }
 
 func (r *Store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
-	iter := r.client.Scan(ctx, 0, rangeKey.PartitionKey.ToHexString()+"*", 0).Iterator()
+	// build scan pattern including prefix
+	pattern := rangeKey.PartitionKey.ToHexString() + "*"
+	if r.prefix != "" {
+		pattern = r.prefix + ":" + pattern
+	}
+	iter := r.client.Scan(ctx, 0, pattern, 0).Iterator()
 	var keys []string
 	for iter.Next(ctx) {
 		key := iter.Val()
+		// strip optional prefix before decoding
+		stripped := r.stripPrefix(key)
 		var encoded lexkey.LexKey
-		if err := encoded.FromHexString(key); err != nil {
+		if err := encoded.FromHexString(stripped); err != nil {
 			slog.WarnContext(ctx, "invalid lexkey during scan", "key", key, "err", err)
 			continue
 		}
+		// reconstruct primary key from the encoded bytes
+		// partition length is len(rangeKey.PartitionKey)
+		if len(encoded) <= len(rangeKey.PartitionKey) {
+			continue
+		}
 		pk := lexkey.NewPrimaryKey(encoded[:len(rangeKey.PartitionKey)], encoded[len(rangeKey.PartitionKey)+1:])
-		if bytes.Equal(pk.PartitionKey, rangeKey.PartitionKey) {
+		// skip keys not in the same partition
+		if !bytes.Equal(pk.PartitionKey, rangeKey.PartitionKey) {
 			continue
 		}
 		if bytes.Compare(pk.RowKey, rangeKey.StartRowKey) >= 0 && bytes.Compare(pk.RowKey, rangeKey.EndRowKey) <= 0 {
@@ -197,6 +249,9 @@ func (r *Store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 		EndRowKey:    args.EndRowKey,
 	}
 	match := rk.PartitionKey.ToHexString() + "*"
+	if r.prefix != "" {
+		match = r.prefix + ":" + match
+	}
 	filter := getOperatorFunctions(args.Operator)
 	iter := r.client.Scan(ctx, 0, match, 0).Iterator()
 
@@ -207,8 +262,10 @@ func (r *Store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 		if args.Limit > 0 && count >= args.Limit {
 			return nil, false, nil
 		}
+		// strip prefix before decoding
+		stripped := r.stripPrefix(key)
 		var encoded lexkey.LexKey
-		if err := encoded.FromHexString(key); err != nil {
+		if err := encoded.FromHexString(stripped); err != nil {
 			slog.WarnContext(ctx, "invalid lexkey", "key", key, "err", err)
 			return nil, false, kv.ErrInvalidLexKey
 		}
@@ -232,7 +289,7 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	}
 	pipe := r.client.Pipeline()
 	for i, item := range items {
-		key := item.PK.Encode().ToHexString()
+		key := r.mkKeyHex(item.PK)
 		switch item.Op {
 		case kv.Put:
 			pipe.Set(ctx, key, item.Value, 0)

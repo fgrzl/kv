@@ -5,16 +5,37 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/fgrzl/enumerators"
-	"github.com/fgrzl/kv"
+	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
 
+// PebbleDB defines the interface for Pebble database operations.
+type PebbleDB interface {
+	Get(key []byte) ([]byte, io.Closer, error)
+	Set(key, value []byte, opts *pebble.WriteOptions) error
+	Delete(key []byte, opts *pebble.WriteOptions) error
+	NewBatch(opts ...pebble.BatchOption) *pebble.Batch
+	NewIterWithContext(ctx context.Context, opts *pebble.IterOptions) (*pebble.Iterator, error)
+	Close() error
+}
+
+// PebbleBatch defines the interface for Pebble batch operations.
+type PebbleBatch interface {
+	Set(key, value []byte, opts *pebble.WriteOptions) error
+	Delete(key []byte, opts *pebble.WriteOptions) error
+	DeleteRange(start, end []byte, opts *pebble.WriteOptions) error
+	Commit(opts *pebble.WriteOptions) error
+	Close() error
+}
+
 type store struct {
-	db       *pebble.DB
+	db       PebbleDB
 	disposed sync.Once
 }
 
@@ -23,8 +44,19 @@ func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
 	options := NewOptions(opts...) // returns *pebble.Options
 	db, err := pebble.Open(path, options)
 	if err != nil {
+		return nil, fmt.Errorf("failed to open pebble database: %w", err)
+	}
+	store, err := NewPebbleStoreWithDB(db)
+	if err != nil {
 		return nil, err
 	}
+	slog.InfoContext(context.Background(), "Pebble store initialized", "path", path)
+	return store, nil
+}
+
+// NewPebbleStoreWithDB creates a new Pebble-backed kv.KV store with a provided database.
+// This is primarily for testing purposes.
+func NewPebbleStoreWithDB(db PebbleDB) (kv.KV, error) {
 	return &store{db: db}, nil
 }
 
@@ -226,7 +258,7 @@ func (s *store) enumerateRange(ctx context.Context, args kv.QueryArgs) enumerato
 	)
 }
 
-func applyBatchOp(batch *pebble.Batch, item *kv.BatchItem) error {
+func applyBatchOp(batch PebbleBatch, item *kv.BatchItem) error {
 	key := item.PK.Encode()
 	switch item.Op {
 	case kv.NoOp:
