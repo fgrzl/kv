@@ -125,6 +125,69 @@ go get github.com/fgrzl/kv
 
 ---
 
+## ⚡ **Dead Simple Setup**
+
+For the quickest possible setup with sensible defaults, use the `quickstart` package:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/fgrzl/kv/pkg/quickstart"
+    kvstore "github.com/fgrzl/kv"
+    "github.com/fgrzl/lexkey"
+)
+
+func main() {
+    // Create a KV store with Pebble backend (temporary database)
+    kv, err := quickstart.NewPebbleKV("")
+    if err != nil {
+        panic(err)
+    }
+    defer kv.Close()
+
+    // Create a graph database
+    graph, err := quickstart.NewGraph("myapp", "")
+    if err != nil {
+        panic(err)
+    }
+
+    // Create a time series database
+    ts, err := quickstart.NewTimeSeries("metrics", "")
+    if err != nil {
+        panic(err)
+    }
+
+    // Create a Merkle tree
+    tree, err := quickstart.NewMerkleTree("")
+    if err != nil {
+        panic(err)
+    }
+
+    // Ready to use! All backends are pre-configured with optimized settings.
+
+    // Example: Use the KV store
+    pk := lexkey.NewPrimaryKey(lexkey.Encode("users"), lexkey.Encode("john"))
+    err = kv.Put(context.Background(), &kvstore.Item{PK: pk, Value: []byte("John Doe")})
+    // ... use kv, graph, ts, tree as needed
+}
+```
+
+**Available Quick Start Functions:**
+- `NewPebbleKV(path)` - Embedded key-value store (empty path = temp DB)
+- `NewRedisKV(addr)` - Redis-backed store (empty addr = localhost:6379)  
+- `NewAzureKV(table)` - Azure Tables store (uses env vars for auth)
+- `NewGraph(name, pebblePath)` - Complete graph setup
+- `NewTimeSeries(name, pebblePath)` - Complete time series setup
+- `NewMerkleTree(pebblePath)` - Complete Merkle tree setup
+
+All functions include OpenTelemetry instrumentation by default.
+
+---
+
 ## 🚀 **Quick Start**
 
 ### Basic Usage
