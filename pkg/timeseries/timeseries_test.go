@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/fgrzl/enumerators"
+	"github.com/fgrzl/kv"
 	"github.com/fgrzl/kv/pkg/storage/pebble"
+	"github.com/fgrzl/lexkey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -149,4 +151,45 @@ func TestShouldHandleAppendingDuplicateTimestamps(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, out, 1)
 	assert.Equal(t, []byte("second"), out[0].Value)
+}
+
+func TestShouldHandleJSONUnmarshalErrorInQueryRange(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+
+	// Manually insert invalid JSON data
+	part := ts.partition("bad-series")
+	pk := lexkey.NewPrimaryKey(part, ts.encodeRowKeyForTimestamp(100))
+	invalidJSON := []byte(`invalid json`)
+	require.NoError(t, ts.store.Put(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act
+	out, err := ts.QueryRange(ctx, "bad-series", 50, 150)
+
+	// Assert
+	assert.NoError(t, err)
+	// Invalid JSON should be skipped, so empty result
+	assert.Len(t, out, 0)
+}
+
+func TestShouldHandleJSONUnmarshalErrorInEnumerateRange(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+
+	// Manually insert invalid JSON data
+	part := ts.partition("bad-series-enum")
+	pk := lexkey.NewPrimaryKey(part, ts.encodeRowKeyForTimestamp(200))
+	invalidJSON := []byte(`invalid json`)
+	require.NoError(t, ts.store.Put(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act
+	enum := ts.EnumerateRange(ctx, "bad-series-enum", 150, 250)
+	samples, err := enumerators.ToSlice(enum)
+
+	// Assert
+	assert.NoError(t, err)
+	// Invalid JSON should be filtered out, so empty result
+	assert.Len(t, samples, 0)
 }

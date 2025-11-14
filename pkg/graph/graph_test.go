@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/fgrzl/enumerators"
+	"github.com/fgrzl/kv"
+	"github.com/fgrzl/lexkey"
 
 	"github.com/fgrzl/kv/pkg/storage/pebble"
 	"github.com/stretchr/testify/assert"
@@ -479,4 +482,228 @@ func TestShouldBatchAddNodesAndEdges(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, in, 1)
 	assert.Equal(t, "n1", in[0].From)
+}
+
+func TestShouldHandleJSONMarshalErrorInAddNode(t *testing.T) {
+	// This test is tricky because json.Marshal rarely fails for our struct.
+	// We'll skip this for now as it's hard to trigger without reflection tricks.
+	t.Skip("json.Marshal error in AddNode is difficult to test without reflection")
+}
+
+func TestShouldHandleJSONUnmarshalErrorInGetNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+
+	// Manually insert invalid JSON data
+	pk := lexkey.NewPrimaryKey(g.(*graphStore).nodePartition(), lexkey.Encode("bad-node"))
+	invalidJSON := []byte(`{"id": "bad-node", "meta": "invalid-json"}`) // meta should be base64, but we'll make it invalid JSON
+	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act
+	node, err := g.GetNode(ctx, "bad-node")
+
+	// Assert
+	assert.Error(t, err)
+	assert.Nil(t, node)
+}
+
+func TestShouldHandleDecodeMetaErrorInGetNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+
+	// Manually insert data with invalid base64 meta
+	pk := lexkey.NewPrimaryKey(g.(*graphStore).nodePartition(), lexkey.Encode("bad-meta-node"))
+	invalidBase64 := []byte(`{"id": "bad-meta-node", "meta": "not-base64!@#"}`)
+	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidBase64}))
+
+	// Act
+	node, err := g.GetNode(ctx, "bad-meta-node")
+
+	// Assert
+	assert.Error(t, err)
+	assert.Nil(t, node)
+}
+
+func TestShouldHandleMalformedEdgeDataInDeleteNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "test-node", nil))
+
+	// Manually insert invalid JSON in edge partition
+	edgePart := g.(*graphStore).edgePartition("test-node")
+	pk := lexkey.NewPrimaryKey(edgePart, lexkey.Encode("some-target"))
+	invalidJSON := []byte(`invalid json`)
+	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act - should not crash, should skip malformed entries
+	err := g.DeleteNode(ctx, "test-node")
+
+	// Assert
+	assert.NoError(t, err)
+}
+
+func TestShouldRespectBFSLimit(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "c", nil))
+
+	// Act
+	var order []string
+	err := g.BFS(ctx, "a", func(id string) error {
+		order = append(order, id)
+		return nil
+	}, 2) // limit to 2 nodes
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, order, 2)
+	assert.Equal(t, "a", order[0])
+	// Should visit either b or c, but not both due to limit
+	assert.Contains(t, []string{"b", "c"}, order[1])
+}
+
+func TestShouldRespectBFSWithDepthLimit(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+
+	// Act
+	var seen []string
+	err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 2) // limit to 2 nodes
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, seen, 2)
+	assert.Contains(t, seen, "a:0")
+	// Should visit one more node at depth 1 (either b or c)
+	depth1Nodes := make([]string, 0)
+	for _, s := range seen {
+		if strings.HasSuffix(s, ":1") {
+			depth1Nodes = append(depth1Nodes, s)
+		}
+	}
+	assert.Len(t, depth1Nodes, 1)
+	assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
+}
+
+func TestShouldHandleMalformedEdgeDataInNeighbors(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil)) // valid edge
+
+	// Manually insert invalid JSON in edge partition
+	edgePart := g.(*graphStore).edgePartition("a")
+	pk := lexkey.NewPrimaryKey(edgePart, lexkey.Encode("malformed-target"))
+	invalidJSON := []byte(`invalid json`)
+	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act
+	nbrs, err := g.Neighbors(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	// Should return only the valid edge, skip the malformed one
+	assert.Len(t, nbrs, 1)
+	assert.Equal(t, "b", nbrs[0].To)
+}
+
+func TestShouldHandleMalformedEdgeDataInIncomingNeighbors(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil)) // valid edge
+
+	// Manually insert invalid JSON in incoming edge partition
+	inEdgePart := g.(*graphStore).inEdgePartition("b")
+	pk := lexkey.NewPrimaryKey(inEdgePart, lexkey.Encode("malformed-from"))
+	invalidJSON := []byte(`invalid json`)
+	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+
+	// Act
+	in, err := g.IncomingNeighbors(ctx, "b")
+
+	// Assert
+	assert.NoError(t, err)
+	// Should return only the valid edge, skip the malformed one
+	assert.Len(t, in, 1)
+	assert.Equal(t, "a", in[0].From)
+}
+
+func TestShouldRespectDFSLimit(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+
+	// Act
+	var order []string
+	err := g.DFS(ctx, "a", func(id string) error {
+		order = append(order, id)
+		return nil
+	}, 2) // limit to 2 nodes
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, order, 2)
+	assert.Equal(t, "a", order[0])
+	// DFS order may vary, but should visit 2 nodes total
+	assert.Contains(t, []string{"b", "c"}, order[1])
+}
+
+func TestShouldRespectDFSWithDepthLimit(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+
+	// Act
+	var seen []string
+	err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
+		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+		return nil
+	}, 2) // limit to 2 nodes
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, seen, 2)
+	assert.Contains(t, seen, "a:0")
+	// Should visit one more node at depth 1
+	depth1Nodes := make([]string, 0)
+	for _, s := range seen {
+		if strings.HasSuffix(s, ":1") {
+			depth1Nodes = append(depth1Nodes, s)
+		}
+	}
+	assert.Len(t, depth1Nodes, 1)
+	assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
 }
