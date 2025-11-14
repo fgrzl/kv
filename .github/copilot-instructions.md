@@ -14,7 +14,7 @@ Welcome, Copilot. Please follow these instructions to ensure clean, idiomatic, a
 
 * All code must be covered with meaningful tests.
 * All test should test a single behavior. 
-  - Tests that have multiple Act opertions should be split into smaller tests
+  - Tests that have multiple Act operations should be split into smaller tests
   - Tests that cover multiple inputs for the same act/assert should use table driven semantics
 
 * Use Go’s standard `testing` package with `testify/assert` for assertions.
