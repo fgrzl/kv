@@ -6,10 +6,17 @@ import (
 	"log/slog"
 	"math"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
+
+var tracer = otel.Tracer("github.com/fgrzl/kv/timeseries")
 
 // Sample represents a single time series datapoint.
 type Sample struct {
@@ -86,16 +93,29 @@ func (ts *TimeSeries) encodeRangeForBounds(from, to int64) (lexkey.LexKey, lexke
 // epoch in seconds or milliseconds as desired by the caller; lexicographic
 // ordering is preserved by the lexkey encoding of the timestamp value.
 func (ts *TimeSeries) Append(ctx context.Context, series string, timestamp int64, value []byte) error {
+	ctx, span := tracer.Start(ctx, "timeseries.Append",
+		trace.WithAttributes(
+			attribute.String("timeseries", ts.name),
+			attribute.String("series", series),
+			attribute.Int64("timestamp", timestamp),
+			attribute.Int("value_size", len(value)),
+		))
+	defer span.End()
+
 	s := Sample{Series: series, Timestamp: timestamp, Value: value}
 	b, err := json.Marshal(s)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to marshal timeseries sample", "series", series, "timestamp", timestamp, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	pk := lexkey.NewPrimaryKey(ts.partition(series), ts.encodeRowKeyForTimestamp(timestamp))
 	err = ts.store.Put(ctx, &kv.Item{PK: pk, Value: b})
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to store timeseries sample", "series", series, "timestamp", timestamp, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	slog.DebugContext(ctx, "timeseries sample appended", "series", series, "timestamp", timestamp)

@@ -31,6 +31,7 @@ The library follows an interface-based design pattern with a core `KV` interface
 - 🎯 **Pluggable Backends** - Easy switching between storage systems
 - 🧪 **Test-Friendly** - Built-in test utilities and Docker setup
 - 📈 **Performance** - Optimized for high-throughput scenarios
+- 📊 **Observability** - Built-in OpenTelemetry tracing and metrics for monitoring
 
 ---
 
@@ -64,6 +65,51 @@ Overlays maintain high performance while providing rich functionality, with no u
 - Efficient batching for storage operations
 - Optimized hash computation with SHA256 reuse
 - Memory-efficient processing for large trees
+
+---
+
+## 📊 **Observability**
+
+The KV library includes comprehensive **OpenTelemetry instrumentation** for tracing and metrics collection. All core operations and overlay abstractions are automatically instrumented.
+
+### Tracing
+
+- **Core KV Operations**: All `Get`, `Put`, `Insert`, `Remove`, `Query`, and `Batch` operations are traced
+- **Overlay Operations**: Graph BFS traversals, Merkle tree builds, and Timeseries queries are traced
+- **Storage Backends**: Each backend (Pebble, Redis, Azure) includes operation-specific spans
+
+### Metrics
+
+- **Operation Counters**: Total operations by type and result (success/error)
+- **Operation Duration**: Histograms measuring operation latency
+- **Backend-specific Metrics**: Store type and operation attributes
+
+### Usage
+
+```go
+import (
+    "github.com/fgrzl/kv"
+    "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/exporters/jaeger"
+)
+
+// Initialize OpenTelemetry (example with Jaeger)
+exp, _ := jaeger.New(jaeger.WithCollectorEndpoint())
+tp := trace.NewTracerProvider(trace.WithBatcher(exp))
+otel.SetTracerProvider(tp)
+
+// Use instrumented KV store
+store := kv.NewInstrumentedKV(pebbleStore, "pebble")
+```
+
+### Span Attributes
+
+- `store`: Backend type (pebble, redis, azure)
+- `operation`: Operation type (get, put, insert, etc.)
+- `partition_key`: Hex-encoded partition key
+- `row_key`: Hex-encoded row key (when applicable)
+- `batch_size`: Number of items in batch operations
+- `result`: Operation result (success, error, hit, miss)
 
 ---
 

@@ -6,10 +6,17 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
+
+var tracer = otel.Tracer("github.com/fgrzl/kv/graph")
 
 // Node represents a graph node.
 type Node struct {
@@ -104,10 +111,20 @@ func (g *graphStore) inEdgePartition(to string) lexkey.LexKey {
 }
 
 func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error {
+	ctx, span := tracer.Start(ctx, "graph.AddNode",
+		trace.WithAttributes(
+			attribute.String("graph", g.name),
+			attribute.String("node_id", id),
+			attribute.Int("meta_size", len(meta)),
+		))
+	defer span.End()
+
 	sn := storedNode{ID: id, Meta: encodeMeta(meta)}
 	b, err := json.Marshal(sn)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to marshal node", "id", id, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
@@ -115,6 +132,8 @@ func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error 
 	err = g.store.Insert(ctx, &kv.Item{PK: pk, Value: b})
 	if err != nil {
 		slog.WarnContext(ctx, "failed to add node", "id", id, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	slog.InfoContext(ctx, "node added", "id", id, "graph", g.name)
@@ -292,6 +311,14 @@ func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, 
 }
 
 func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string) error, limit int) error {
+	ctx, span := tracer.Start(ctx, "graph.BFS",
+		trace.WithAttributes(
+			attribute.String("graph", g.name),
+			attribute.String("start_node", start),
+			attribute.Int("limit", limit),
+		))
+	defer span.End()
+
 	slog.DebugContext(ctx, "starting BFS traversal", "start", start, "limit", limit, "graph", g.name)
 	// simple queue-based BFS with pre-allocation optimizations
 	queue := make([]string, 0, 100) // pre-allocate
@@ -303,6 +330,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 		select {
 		case <-ctx.Done():
 			slog.DebugContext(ctx, "BFS cancelled", "visited", visited)
+			span.SetAttributes(attribute.Int("visited", visited))
 			return ctx.Err()
 		default:
 		}
@@ -313,17 +341,24 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 		}
 		if err := visit(cur); err != nil {
 			slog.ErrorContext(ctx, "BFS visit failed", "node", cur, "err", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.Int("visited", visited))
 			return err
 		}
 		seen[cur] = struct{}{}
 		visited++
 		if limit > 0 && visited >= limit {
 			slog.DebugContext(ctx, "BFS limit reached", "visited", visited, "limit", limit)
+			span.SetAttributes(attribute.Int("visited", visited))
 			return nil
 		}
 		nbrs, err := g.Neighbors(ctx, cur)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to get neighbors", "node", cur, "err", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.Int("visited", visited))
 			return err
 		}
 		for _, e := range nbrs {
@@ -333,6 +368,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 		}
 	}
 	slog.DebugContext(ctx, "BFS completed", "visited", visited)
+	span.SetAttributes(attribute.Int("visited", visited))
 	return nil
 }
 

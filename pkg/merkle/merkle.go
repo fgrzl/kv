@@ -8,10 +8,17 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
+
+var tracer = otel.Tracer("github.com/fgrzl/kv/merkle")
 
 // Branch is an in-memory Merkle node (for tree construction only).
 type Branch struct {
@@ -85,35 +92,54 @@ func NewTree(store kv.KV, opts ...Option) *Tree {
 
 // Build builds and persists a Merkle tree from a leaf enumerator.
 func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) error {
+	ctx, span := tracer.Start(ctx, "merkle.Build",
+		trace.WithAttributes(
+			attribute.String("stage", stage),
+			attribute.String("space", space),
+		))
+	defer span.End()
+
 	slog.InfoContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
 	if err := m.pruneOldNodes(ctx, stage, space); err != nil {
 		slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	currNodes, err := m.persistLeaves(ctx, stage, space, leaves)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to persist leaves", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if len(currNodes) == 0 {
 		slog.InfoContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
+		span.SetAttributes(attribute.Int("leaves", 0))
 		return nil
 	}
 	currNodes, err = m.padLeaves(ctx, stage, space, currNodes)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to pad leaves", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	currNodes, err = m.persistInternalLevels(ctx, stage, space, currNodes)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to persist internal levels", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if err := m.persistRoot(ctx, stage, space, currNodes); err != nil {
 		slog.ErrorContext(ctx, "failed to persist root", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	slog.InfoContext(ctx, "Merkle tree build completed", "stage", stage, "space", space, "leaves", len(currNodes))
+	span.SetAttributes(attribute.Int("leaves", len(currNodes)))
 	return nil
 }
 
