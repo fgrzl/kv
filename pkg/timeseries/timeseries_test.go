@@ -141,6 +141,7 @@ func TestShouldHandleAppendingDuplicateTimestamps(t *testing.T) {
 
 	// Act
 	err := ts.Append(ctx, "s", 1, []byte("second"))
+	assert.NoError(t, err)
 
 	// Assert
 	// Assuming it overwrites, check the value
