@@ -20,11 +20,11 @@ jobs:
           fetch-depth: 0
 
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v4.1.0
+        uses: gittools/actions/gitversion/setup@v4.2.0
 
       - name: Calculate Version
         id: version
-        uses: gittools/actions/gitversion/execute@v4.1.0
+        uses: gittools/actions/gitversion/execute@v4.2.0
 
       - name: Tag Commit
         uses: fgrzl/actions/tag-commit@v0.0.5
@@ -32,9 +32,9 @@ jobs:
           tag: ${{ steps.version.outputs.semVer }}
 
       - name: Notify Go Proxy
-        uses: fgrzl/actions/notify-go-proxy@v0.0.5
+        uses: fgrzl/actions/notify-go-proxy@v0.0.6
         with:
           tag: ${{ steps.version.outputs.semVer }}
 
       - name: Prune Pre-release Tags
-        uses: fgrzl/actions/prune-tags@v0.0.5
+        uses: fgrzl/actions/prune-tags@v0.0.6
