@@ -7,7 +7,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.4.1
 	github.com/cockroachdb/pebble/v2 v2.1.1
-	github.com/fgrzl/enumerators v0.1.0-alpha.45
+	github.com/fgrzl/enumerators v0.1.0-alpha.47
 	github.com/fgrzl/lexkey v0.1.0-alpha.35
 	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.16.0
@@ -53,7 +53,7 @@ require (
 	github.com/prometheus/common v0.67.2 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
