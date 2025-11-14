@@ -707,3 +707,132 @@ func TestShouldRespectDFSWithDepthLimit(t *testing.T) {
 	assert.Len(t, depth1Nodes, 1)
 	assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
 }
+
+func TestShouldHandleContextCancellationDuringBFSTraversal(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddNode(ctx, "c", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "b", "c", nil))
+
+	// Act - cancel context after visiting first node
+	visited := make([]string, 0)
+	err := g.BFS(ctx, "a", func(id string) error {
+		visited = append(visited, id)
+		if id == "a" {
+			cancel() // Cancel after visiting start node
+		}
+		return nil
+	}, 0)
+
+	// Assert
+	assert.Error(t, err)
+	assert.Equal(t, context.Canceled, err)
+	assert.Contains(t, visited, "a") // Should have visited at least the start node
+}
+
+func TestShouldHandleBFSTraversalFromNonExistentNode(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+
+	// Act
+	visited := make([]string, 0)
+	err := g.BFS(ctx, "nonexistent", func(id string) error {
+		visited = append(visited, id)
+		return nil
+	}, 0)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, visited, 1)
+	assert.Equal(t, "nonexistent", visited[0])
+}
+
+func TestShouldAllowSelfLoops(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "a", []byte("self-loop")))
+
+	// Act
+	nbrs, err := g.Neighbors(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 1)
+	assert.Equal(t, "a", nbrs[0].To)
+	assert.Equal(t, []byte("self-loop"), nbrs[0].Meta)
+}
+
+func TestShouldHandleDuplicateEdges(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", []byte("first")))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", []byte("second"))) // Overwrites
+
+	// Act
+	nbrs, err := g.Neighbors(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 1)
+	assert.Equal(t, "b", nbrs[0].To)
+	assert.Equal(t, []byte("second"), nbrs[0].Meta) // Last one wins
+}
+
+func TestShouldHandleEmptyBatchAdd(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+
+	// Act
+	err := g.BatchAdd(ctx, []Node{}, []Edge{})
+
+	// Assert
+	assert.NoError(t, err)
+}
+
+func TestShouldHandleBatchAddWithOnlyNodes(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	nodes := []Node{{ID: "n1"}, {ID: "n2"}}
+
+	// Act
+	err := g.BatchAdd(ctx, nodes, []Edge{})
+
+	// Assert
+	assert.NoError(t, err)
+	for _, n := range nodes {
+		exists, err := g.HasNode(ctx, n.ID)
+		assert.NoError(t, err)
+		assert.True(t, exists)
+	}
+}
+
+func TestShouldHandleBatchAddWithOnlyEdges(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	edges := []Edge{{From: "a", To: "b"}}
+
+	// Act
+	err := g.BatchAdd(ctx, []Node{}, edges)
+
+	// Assert
+	assert.NoError(t, err)
+	nbrs, err := g.Neighbors(ctx, "a")
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 1)
+	assert.Equal(t, "b", nbrs[0].To)
+}
