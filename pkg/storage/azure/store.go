@@ -1,7 +1,6 @@
 package azure
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -312,14 +311,25 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	if len(items) > 100 {
 		return kv.ErrInvalidBatchOperation
 	}
-	pk := items[0].PK.PartitionKey
-	for i, item := range items[1:] {
-		if !bytes.Equal(item.PK.PartitionKey, pk) {
-			slog.ErrorContext(ctx, "batch with mixed partition keys", "index", i)
-			return kv.ErrInvalidBatchOperation
+
+	// Group items by partition key
+	batchesByPartition := make(map[string][]*kv.BatchItem)
+	for _, item := range items {
+		key := string(item.PK.PartitionKey)
+		batchesByPartition[key] = append(batchesByPartition[key], item)
+	}
+
+	// Process each partition batch
+	for _, batch := range batchesByPartition {
+		if err := s.batchSinglePartition(ctx, batch); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem) error {
 	var ops []aztables.TransactionAction
 	for _, item := range items {
 		var typ aztables.TransactionType
