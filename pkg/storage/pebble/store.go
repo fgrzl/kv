@@ -328,11 +328,19 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 			}, func(iter *pebble.Iterator) bool {
 				return iter.Next()
 			}
+	case kv.Scan:
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
+				return bytes.Equal(pk.PartitionKey, rk.PartitionKey)
+			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
+				return iter.SeekGE(opts.LowerBound)
+			}, func(iter *pebble.Iterator) bool {
+				return iter.Next()
+			}
 	default:
 		return func(_ lexkey.PrimaryKey, _ lexkey.RangeKey) bool {
 				return true
-			}, func(iter *pebble.Iterator, _ *pebble.IterOptions) bool {
-				return iter.First()
+			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
+				return iter.SeekGE(opts.LowerBound)
 			}, func(iter *pebble.Iterator) bool {
 				return iter.Next()
 			}
