@@ -315,7 +315,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	// Group items by partition key
 	batchesByPartition := make(map[string][]*kv.BatchItem)
 	for _, item := range items {
-		key := string(item.PK.PartitionKey)
+		key := item.PK.PartitionKey.ToHexString()
 		batchesByPartition[key] = append(batchesByPartition[key], item)
 	}
 
@@ -395,7 +395,7 @@ func buildFilter(args kv.QueryArgs) (*string, error) {
 	pk := args.PartitionKey.ToHexString()
 	switch args.Operator {
 	case kv.Scan:
-		return nil, nil
+		return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
 	case kv.Equal:
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, args.StartRowKey.ToHexString())), nil
 	case kv.GreaterThan:
