@@ -357,6 +357,192 @@ func TestQueryPartitionScanWithLimit(t *testing.T) {
 	}
 }
 
+func TestQueryPartitionScanDescending(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			args := kv.QueryArgs{
+				PartitionKey: partitionKey,
+				Operator:     kv.Scan,
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), args, kv.Descending)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 7) // "g", "f", "e", "d", "c", "b", "a"
+			assert.Equal(t, lexkey.Encode("g"), results[0].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("f"), results[1].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("e"), results[2].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("c"), results[4].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("b"), results[5].PK.RowKey)
+			assert.Equal(t, lexkey.Encode("a"), results[6].PK.RowKey)
+		})
+	}
+}
+
+func TestQueryPartitionScanEmptyPartition(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			emptyPartitionKey := lexkey.Encode("empty-partition")
+			args := kv.QueryArgs{
+				PartitionKey: emptyPartitionKey,
+				Operator:     kv.Scan,
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), args, kv.Ascending)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 0)
+		})
+	}
+}
+
+func TestQueryPartitionScanIsolation(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+
+			// Add data to a different partition
+			otherPartitionKey := lexkey.Encode("other-partition")
+			otherItems := []*kv.Item{
+				{PK: lexkey.NewPrimaryKey(otherPartitionKey, lexkey.Encode("x")), Value: []byte("X")},
+				{PK: lexkey.NewPrimaryKey(otherPartitionKey, lexkey.Encode("y")), Value: []byte("Y")},
+			}
+			for _, item := range otherItems {
+				err := db.Put(t.Context(), item)
+				require.NoError(t, err)
+			}
+
+			// Scan the original partition
+			args := kv.QueryArgs{
+				PartitionKey: partitionKey,
+				Operator:     kv.Scan,
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), args, kv.Ascending)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 7) // Only items from the original partition
+
+			// Verify all results are from the correct partition
+			for _, item := range results {
+				assert.Equal(t, partitionKey, item.PK.PartitionKey)
+			}
+
+			// Verify other partition items are not included
+			foundX := false
+			foundY := false
+			for _, item := range results {
+				if string(item.PK.RowKey) == "x" {
+					foundX = true
+				}
+				if string(item.PK.RowKey) == "y" {
+					foundY = true
+				}
+			}
+			assert.False(t, foundX, "should not find item from other partition")
+			assert.False(t, foundY, "should not find item from other partition")
+		})
+	}
+}
+
+func TestQueryPartitionScanWithLimitAndSort(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			args := kv.QueryArgs{
+				PartitionKey: partitionKey,
+				Operator:     kv.Scan,
+				Limit:        2,
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), args, kv.Descending)
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 2)
+			// Verify items are from the correct partition and sorted descending
+			for _, item := range results {
+				assert.Equal(t, partitionKey, item.PK.PartitionKey)
+			}
+			// Verify descending order (first item's row key >= second item's row key)
+			if len(results) == 2 {
+				assert.GreaterOrEqual(t, string(results[0].PK.RowKey), string(results[1].PK.RowKey),
+					"results should be sorted in descending order")
+			}
+		})
+	}
+}
+
+func TestEnumeratePartitionScan(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			args := kv.QueryArgs{
+				PartitionKey: partitionKey,
+				Operator:     kv.Scan,
+				Limit:        3,
+			}
+
+			// Act
+			var results []*kv.Item
+			enumerator := db.Enumerate(t.Context(), args)
+			err := enumerators.ForEach(enumerator, func(item *kv.Item) error {
+				results = append(results, item)
+				return nil
+			})
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 3)
+			// Redis SCAN doesn't guarantee order, so just verify we got 3 items from the partition
+			for _, item := range results {
+				assert.Equal(t, partitionKey, item.PK.PartitionKey)
+			}
+		})
+	}
+}
+
+func TestEnumeratePartitionScanEmpty(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			emptyPartitionKey := lexkey.Encode("nonexistent")
+			args := kv.QueryArgs{
+				PartitionKey: emptyPartitionKey,
+				Operator:     kv.Scan,
+			}
+
+			// Act
+			var results []*kv.Item
+			enumerator := db.Enumerate(t.Context(), args)
+			err := enumerators.ForEach(enumerator, func(item *kv.Item) error {
+				results = append(results, item)
+				return nil
+			})
+
+			// Assert
+			assert.NoError(t, err)
+			assert.Len(t, results, 0)
+		})
+	}
+}
+
 func TestShouldGetItem(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {

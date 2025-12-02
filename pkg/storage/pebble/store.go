@@ -313,8 +313,7 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 			}
 	case kv.Between:
 		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
-				return bytes.Compare(pk.RowKey, rk.StartRowKey) >= 0 &&
-					bytes.Compare(pk.RowKey, rk.EndRowKey) <= 0
+				return true // Iterator bounds already handle the range filtering
 			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
 				return iter.SeekGE(opts.LowerBound)
 			}, func(iter *pebble.Iterator) bool {
@@ -330,7 +329,7 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 			}
 	case kv.Scan:
 		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
-				return bytes.Equal(pk.PartitionKey, rk.PartitionKey)
+				return true
 			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
 				return iter.SeekGE(opts.LowerBound)
 			}, func(iter *pebble.Iterator) bool {

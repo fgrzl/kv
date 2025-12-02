@@ -1,4 +1,5 @@
 services:
+
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     container_name: azurite

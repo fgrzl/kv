@@ -131,7 +131,7 @@ func (ts *TimeSeries) QueryRange(ctx context.Context, series string, from, to in
 		slog.DebugContext(ctx, "invalid timeseries range", "series", series, "from", from, "to", to)
 		return nil, nil
 	}
-	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Scan}
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Between}
 	items, err := ts.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to query timeseries", "series", series, "from", from, "to", to, "err", err)
@@ -174,7 +174,7 @@ func (ts *TimeSeries) EnumerateRange(ctx context.Context, series string, from, t
 	if !ok {
 		return enumerators.Empty[Sample]()
 	}
-	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Scan}
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: startRK, EndRowKey: endRK, Operator: kv.Between}
 	inner := ts.store.Enumerate(ctx, args)
 	return enumerators.FilterMap(inner, func(it *kv.Item) (Sample, bool, error) {
 		var s Sample
