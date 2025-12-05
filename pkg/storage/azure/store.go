@@ -399,16 +399,35 @@ func buildFilter(args kv.QueryArgs) (*string, error) {
 	case kv.Equal:
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, args.StartRowKey.ToHexString())), nil
 	case kv.GreaterThan:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey gt '%s'", pk, args.StartRowKey.ToHexString())), nil
+		startKey := args.StartRowKey.ToHexString()
+		if startKey == "" {
+			// RowKey gt '' is equivalent to all rows, just filter by partition
+			return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
+		}
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey gt '%s'", pk, startKey)), nil
 	case kv.GreaterThanOrEqual:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, args.StartRowKey.ToHexString())), nil
+		startKey := args.StartRowKey.ToHexString()
+		if startKey == "" {
+			// RowKey ge '' matches all rows, just filter by partition
+			return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
+		}
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, startKey)), nil
 	case kv.LessThan:
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey lt '%s'", pk, args.EndRowKey.ToHexString())), nil
 	case kv.LessThanOrEqual:
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, args.EndRowKey.ToHexString())), nil
 	case kv.Between:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s' and RowKey le '%s'",
-			pk, args.StartRowKey.ToHexString(), args.EndRowKey.ToHexString())), nil
+		startKey := args.StartRowKey.ToHexString()
+		endKey := args.EndRowKey.ToHexString()
+		// Optimize: if start is empty, it's just a LessThanOrEqual
+		if startKey == "" {
+			return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, endKey)), nil
+		}
+		// Optimize: if end is empty, it's just a GreaterThanOrEqual
+		if endKey == "" {
+			return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, startKey)), nil
+		}
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s' and RowKey le '%s'", pk, startKey, endKey)), nil
 	case kv.StartsWith:
 		return nil, fmt.Errorf("StartsWith is not natively supported")
 	default:
