@@ -2,6 +2,9 @@ package azure
 
 import (
 	"fmt"
+	"net"
+	"net/http"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
@@ -11,10 +14,40 @@ func NewSharedKeyCredential(accountName, accountKey string) (*aztables.SharedKey
 	return aztables.NewSharedKeyCredential(accountName, accountKey)
 }
 
+// defaultHTTPClient returns an HTTP client with optimized settings for Azure Tables.
+// Uses connection pooling, keep-alive, and reasonable timeouts to avoid the overhead
+// of establishing a new TCP connection for each request.
+func defaultHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   100, // Important for single-host scenarios (Azure/Azurite)
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		Timeout: 60 * time.Second,
+	}
+}
+
 func getClient(options *TableProviderOptions) (*aztables.Client, error) {
 	name := sanitizeTableName(fmt.Sprintf("%s-%s", options.Prefix, options.Table))
 	url := fmt.Sprintf("%s/%s", options.Endpoint, name)
+
+	// Use provided HTTP client or create default with connection pooling
+	httpClient := options.HTTPClient
+	if httpClient == nil {
+		httpClient = defaultHTTPClient()
+	}
+
 	clientOptions := aztables.ClientOptions{}
+	clientOptions.Transport = httpClient
 
 	switch {
 	case options.UseDefaultAzureCredential:

@@ -1,6 +1,10 @@
 package azure
 
-import "github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
+import (
+	"net/http"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
+)
 
 // TableProviderOptions holds configuration options for Azure Storage Tables.
 type TableProviderOptions struct {
@@ -9,6 +13,7 @@ type TableProviderOptions struct {
 	Endpoint                  string
 	UseDefaultAzureCredential bool
 	SharedKeyCredential       *aztables.SharedKeyCredential
+	HTTPClient                *http.Client // Custom HTTP client for connection pooling
 }
 
 // StoreOption configures a TableProviderOptions.
@@ -46,5 +51,15 @@ func WithDefaultCredential() StoreOption {
 func WithSharedKey(cred *aztables.SharedKeyCredential) StoreOption {
 	return func(o *TableProviderOptions) {
 		o.SharedKeyCredential = cred
+	}
+}
+
+// WithHTTPClient sets a custom HTTP client for connection pooling and keep-alive.
+// This is important for performance in containerized environments where the default
+// HTTP client may create new connections for each request.
+// If not set, a default HTTP client with optimized connection pooling will be used.
+func WithHTTPClient(client *http.Client) StoreOption {
+	return func(o *TableProviderOptions) {
+		o.HTTPClient = client
 	}
 }
