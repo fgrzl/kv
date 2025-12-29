@@ -6,7 +6,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/Azure/azure-sdk-for-go/sdk/data/aztables v1.4.1
-	github.com/cockroachdb/pebble/v2 v2.1.2
+	github.com/cockroachdb/pebble/v2 v2.1.3
 	github.com/fgrzl/enumerators v0.1.0-alpha.47
 	github.com/fgrzl/lexkey v0.1.0-alpha.35
 	github.com/google/uuid v1.6.0
@@ -29,7 +29,7 @@ require (
 	github.com/cockroachdb/errors v1.12.0 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20241215232642-bb51bb14a506 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
-	github.com/cockroachdb/swiss v0.0.0-20250624142022-d6e517c1d961 // indirect
+	github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
