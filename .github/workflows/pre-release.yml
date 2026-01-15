@@ -27,7 +27,7 @@ jobs:
         uses: gittools/actions/gitversion/execute@v4.2.0
 
       - name: Tag Commit
-        uses: fgrzl/actions/tag-commit@v0.0.5
+        uses: fgrzl/actions/tag-commit@v0.0.6
         with:
           tag: ${{ steps.version.outputs.semVer }}
 
@@ -38,3 +38,4 @@ jobs:
 
       - name: Prune Pre-release Tags
         uses: fgrzl/actions/prune-tags@v0.0.6
+
