@@ -10,7 +10,7 @@ require (
 	github.com/fgrzl/enumerators v1.0.0-alpha.3
 	github.com/fgrzl/lexkey v0.1.0-alpha.35
 	github.com/google/uuid v1.6.0
-	github.com/redis/go-redis/v9 v9.17.2
+	github.com/redis/go-redis/v9 v9.17.3
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/metric v1.39.0
