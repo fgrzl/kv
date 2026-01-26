@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -321,4 +322,85 @@ func TestShouldHandleLargeValueData(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, out, 1)
 	assert.Equal(t, largeValue, out[0].Value)
+}
+
+func TestShouldAppendAndQueryRangeWithTime(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	now := time.Now()
+	t1 := now.Add(-2 * time.Second)
+	t2 := now.Add(-1 * time.Second)
+	t3 := now
+
+	// Act
+	require.NoError(t, ts.AppendTime(ctx, "s1", t1, []byte("v1")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t2, []byte("v2")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t3, []byte("v3")))
+
+	// Assert
+	out, err := ts.QueryRangeTime(ctx, "s1", t1, now.Add(1*time.Second))
+	assert.NoError(t, err)
+	assert.Len(t, out, 3)
+	assert.Equal(t, t1.UnixNano(), out[0].Timestamp)
+	assert.Equal(t, []byte("v1"), out[0].Value)
+
+	// Partial range
+	out2, err := ts.QueryRangeTime(ctx, "s1", t2, t3)
+	assert.NoError(t, err)
+	assert.Len(t, out2, 1) // Only t2
+	assert.Equal(t, t2.UnixNano(), out2[0].Timestamp)
+}
+
+func TestShouldEnumerateRangeWithTime(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	now := time.Now()
+	t1 := now.Add(-2 * time.Second)
+	t2 := now.Add(-1 * time.Second)
+	t3 := now
+
+	require.NoError(t, ts.AppendTime(ctx, "s1", t1, []byte("v1")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t2, []byte("v2")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t3, []byte("v3")))
+
+	// Act
+	enum := ts.EnumerateRangeTime(ctx, "s1", t1, now.Add(1*time.Second))
+	var samples []Sample
+	err := enumerators.ForEach(enum, func(s Sample) error {
+		samples = append(samples, s)
+		return nil
+	})
+
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, samples, 3)
+	assert.Equal(t, t1.UnixNano(), samples[0].Timestamp)
+	assert.Equal(t, t2.UnixNano(), samples[1].Timestamp)
+	assert.Equal(t, t3.UnixNano(), samples[2].Timestamp)
+}
+
+func TestShouldAppendAndQueryRangeWithTimeDescending(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTSDescending(t)
+	now := time.Now()
+	t1 := now.Add(-2 * time.Second)
+	t2 := now.Add(-1 * time.Second)
+	t3 := now
+
+	// Act
+	require.NoError(t, ts.AppendTime(ctx, "s1", t1, []byte("v1")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t2, []byte("v2")))
+	require.NoError(t, ts.AppendTime(ctx, "s1", t3, []byte("v3")))
+
+	// Assert
+	out, err := ts.QueryRangeTime(ctx, "s1", t1, now.Add(1*time.Second))
+	assert.NoError(t, err)
+	assert.Len(t, out, 3)
+	// Results should be in descending order when descending flag is set
+	assert.Equal(t, t3.UnixNano(), out[0].Timestamp)
+	assert.Equal(t, t2.UnixNano(), out[1].Timestamp)
+	assert.Equal(t, t1.UnixNano(), out[2].Timestamp)
 }

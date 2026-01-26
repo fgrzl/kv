@@ -67,7 +67,7 @@ func setup(t *testing.T, provider string) kv.KV {
 
 	case "redis":
 		store, err = redis.NewRedisStore(
-			redis.WithAddress("localhost:6379"),
+			redis.WithAddress("127.0.0.1:6379"),
 			redis.WithDatabase(0),
 		)
 		require.NoError(t, err)

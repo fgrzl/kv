@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -186,4 +187,22 @@ func (ts *TimeSeries) EnumerateRange(ctx context.Context, series string, from, t
 		}
 		return Sample{}, false, nil
 	})
+}
+
+// AppendTime inserts a sample for the given series using a time.Time value.
+// The timestamp is converted to Unix nanoseconds.
+func (ts *TimeSeries) AppendTime(ctx context.Context, series string, timestamp time.Time, value []byte) error {
+	return ts.Append(ctx, series, timestamp.UnixNano(), value)
+}
+
+// QueryRangeTime returns samples for series within [from, to) ordered by timestamp ascending
+// using time.Time values. The time range is converted to Unix nanoseconds.
+func (ts *TimeSeries) QueryRangeTime(ctx context.Context, series string, from, to time.Time) ([]Sample, error) {
+	return ts.QueryRange(ctx, series, from.UnixNano(), to.UnixNano())
+}
+
+// EnumerateRangeTime streams samples for series within [from, to) ordered by timestamp ascending
+// using time.Time values. The time range is converted to Unix nanoseconds.
+func (ts *TimeSeries) EnumerateRangeTime(ctx context.Context, series string, from, to time.Time) enumerators.Enumerator[Sample] {
+	return ts.EnumerateRange(ctx, series, from.UnixNano(), to.UnixNano())
 }
