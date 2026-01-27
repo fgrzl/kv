@@ -41,7 +41,7 @@ func TestShouldAddNodeSuccessfully(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestShouldReturnErrorWhenAddingDuplicateNode(t *testing.T) {
+func TestShouldAddNodeIdempotently(t *testing.T) {
 	// Arrange
 	g := setupGraph(t)
 	ctx := context.Background()
@@ -51,7 +51,10 @@ func TestShouldReturnErrorWhenAddingDuplicateNode(t *testing.T) {
 	err := g.AddNode(ctx, "x", []byte("xmeta2"))
 
 	// Assert
-	assert.Error(t, err)
+	assert.NoError(t, err)
+	node, err := g.GetNode(ctx, "x")
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("xmeta2"), node.Meta) // Updated metadata
 }
 
 func TestShouldGetNodeSuccessfully(t *testing.T) {
@@ -111,6 +114,22 @@ func TestShouldDeleteNodeAndCascadeEdges(t *testing.T) {
 	assert.Len(t, inC, 0)
 }
 
+func TestShouldDeleteNodeIdempotently(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+
+	// Act
+	err := g.DeleteNode(ctx, "a")
+	assert.NoError(t, err)
+	// Delete again - should not error
+	err = g.DeleteNode(ctx, "a")
+
+	// Assert
+	assert.NoError(t, err)
+}
+
 func TestShouldAddEdgeSuccessfully(t *testing.T) {
 	// Arrange
 	g := setupGraph(t)
@@ -123,6 +142,27 @@ func TestShouldAddEdgeSuccessfully(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
+}
+
+func TestShouldAddEdgeIdempotently(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+
+	// Act
+	err := g.AddEdge(ctx, "a", "b", []byte("edge-meta-1"))
+	assert.NoError(t, err)
+	// Add again with different metadata - should succeed
+	err = g.AddEdge(ctx, "a", "b", []byte("edge-meta-2"))
+
+	// Assert
+	assert.NoError(t, err)
+	nbrs, err := g.Neighbors(ctx, "a")
+	assert.NoError(t, err)
+	assert.Len(t, nbrs, 1)
+	assert.Equal(t, []byte("edge-meta-2"), nbrs[0].Meta) // Updated metadata
 }
 
 func TestShouldRemoveEdgeSuccessfully(t *testing.T) {
@@ -144,6 +184,24 @@ func TestShouldRemoveEdgeSuccessfully(t *testing.T) {
 	in, err := g.IncomingNeighbors(ctx, "b")
 	assert.NoError(t, err)
 	assert.Len(t, in, 0)
+}
+
+func TestShouldRemoveEdgeIdempotently(t *testing.T) {
+	// Arrange
+	g := setupGraph(t)
+	ctx := context.Background()
+	require.NoError(t, g.AddNode(ctx, "a", nil))
+	require.NoError(t, g.AddNode(ctx, "b", nil))
+	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+
+	// Act
+	err := g.RemoveEdge(ctx, "a", "b")
+	assert.NoError(t, err)
+	// Remove again - should not error
+	err = g.RemoveEdge(ctx, "a", "b")
+
+	// Assert
+	assert.NoError(t, err)
 }
 
 func TestShouldReturnNeighborsCorrectly(t *testing.T) {

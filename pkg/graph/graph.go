@@ -59,19 +59,13 @@ func (g *graphStore) AddEdge(ctx context.Context, from, to string, meta []byte) 
 }
 
 func (g *graphStore) RemoveEdge(ctx context.Context, from, to string) error {
-	// Delete forward edge
+	// Delete forward edge (idempotent: ignore if doesn't exist)
 	edgePK := lexkey.NewPrimaryKey(g.edgePartition(from), lexkey.Encode(to))
-	err := g.store.Remove(ctx, edgePK)
-	if err != nil {
-		return err
-	}
+	_ = g.store.Remove(ctx, edgePK)
 
-	// Delete reverse edge
+	// Delete reverse edge (idempotent: ignore if doesn't exist)
 	reversePK := lexkey.NewPrimaryKey(g.inEdgePartition(to), lexkey.Encode(from))
-	err = g.store.Remove(ctx, reversePK)
-	if err != nil {
-		return err
-	}
+	_ = g.store.Remove(ctx, reversePK)
 
 	return nil
 }
