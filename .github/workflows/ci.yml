@@ -5,10 +5,18 @@ on:
   push:
     branches:
       - "**"
+    paths:
+      - "pkg/**"
+      - "test/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches:
       - main
       - develop
+    paths:
+      - "pkg/**"
+      - "test/**"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
