@@ -1,5 +1,4 @@
 services:
-
   fazure:
     image: ghcr.io/fgrzl/fazure:latest
     container_name: fazure
@@ -17,9 +16,4 @@ services:
     ports:
       - "6379:6379" # Default Redis port
     command: ["redis-server", "--save", ""] # Disable persistence
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+    restart: unless-stopped
