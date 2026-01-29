@@ -79,7 +79,8 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	defer span.End()
 
 	// We'll stream deletes using enumerators to avoid materializing large slices.
-	const chunkSize = 1000
+	// Azure Tables transactions allow up to 100 operations per submit.
+	const chunkSize = 100
 
 	// Pre-allocate batch with reasonable capacity
 	batch := make([]*kv.BatchItem, 0, chunkSize)

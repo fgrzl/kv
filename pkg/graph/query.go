@@ -53,22 +53,31 @@ func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, 
 
 // NodeDegree returns the incoming and outgoing edge counts for a node.
 func (g *graphStore) NodeDegree(ctx context.Context, id string) (int, int, error) {
-	// Count outgoing
+	var outCount int
 	outPart := g.edgePartition(id)
 	outArgs := kv.QueryArgs{PartitionKey: outPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	outItems, err := g.store.Query(ctx, outArgs, kv.Ascending)
-	if err != nil {
+	outEnum := g.store.Enumerate(ctx, outArgs)
+	defer outEnum.Dispose()
+	if err := enumerators.ForEach(outEnum, func(_ *kv.Item) error {
+		outCount++
+		return nil
+	}); err != nil {
 		return 0, 0, err
 	}
 
-	// Count incoming
+	var inCount int
 	inPart := g.inEdgePartition(id)
 	inArgs := kv.QueryArgs{PartitionKey: inPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	inItems, err := g.store.Query(ctx, inArgs, kv.Ascending)
-	if err != nil {
+	inEnum := g.store.Enumerate(ctx, inArgs)
+	defer inEnum.Dispose()
+	if err := enumerators.ForEach(inEnum, func(_ *kv.Item) error {
+		inCount++
+		return nil
+	}); err != nil {
 		return 0, 0, err
 	}
-	return len(inItems), len(outItems), nil
+
+	return inCount, outCount, nil
 }
 
 // EnumerateNeighbors streams outgoing neighbors for `from`.

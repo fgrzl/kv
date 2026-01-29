@@ -50,15 +50,10 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 		return nil
 	}
 
-	// Try one Batch commit first.
-	if err := g.store.Batch(ctx, ops); err == nil {
-		slog.InfoContext(ctx, "batch add completed", "operations", len(ops), "graph", g.name)
-		return nil
-	}
-
-	// Fallback to chunked commits
-	slog.WarnContext(ctx, "falling back to chunked batch commits", "operations", len(ops))
-	const chunkSize = 1000
+	// Chunked commits.
+	// Azure Tables transactions allow up to 100 operations per submit, and the
+	// Azure backend enforces this limit in kv.Batch.
+	const chunkSize = 100
 	for i := 0; i < len(ops); i += chunkSize {
 		end := i + chunkSize
 		if end > len(ops) {
@@ -69,6 +64,6 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 			return err
 		}
 	}
-	slog.InfoContext(ctx, "chunked batch add completed", "operations", len(ops), "graph", g.name)
+	slog.InfoContext(ctx, "batch add completed", "operations", len(ops), "graph", g.name)
 	return nil
 }

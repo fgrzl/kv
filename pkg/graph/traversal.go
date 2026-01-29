@@ -56,18 +56,18 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 			span.SetAttributes(attribute.Int("visited", visited))
 			return nil
 		}
-		nbrs, err := g.Neighbors(ctx, cur)
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to get neighbors", "node", cur, "err", err)
+		enumerator := g.EnumerateNeighbors(ctx, cur)
+		if err := enumerators.ForEach(enumerator, func(edge Edge) error {
+			if _, ok := seen[edge.To]; !ok {
+				queue = append(queue, edge.To)
+			}
+			return nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to enumerate neighbors", "node", cur, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			span.SetAttributes(attribute.Int("visited", visited))
 			return err
-		}
-		for _, e := range nbrs {
-			if _, ok := seen[e.To]; !ok {
-				queue = append(queue, e.To)
-			}
 		}
 	}
 	slog.DebugContext(ctx, "BFS completed", "visited", visited)
@@ -199,14 +199,14 @@ func (g *graphStore) DFSWithDepth(ctx context.Context, start string, visit func(
 		// push neighbors onto stack. To preserve a predictable order that
 		// resembles recursive DFS, we append neighbors in the order returned
 		// so that the first neighbor will be processed last (LIFO).
-		nbrs, err := g.Neighbors(ctx, cur.id)
-		if err != nil {
-			return err
-		}
-		for _, e := range nbrs {
-			if _, ok := seen[e.To]; !ok {
-				stack = append(stack, sItem{e.To, cur.depth + 1})
+		enumerator := g.EnumerateNeighbors(ctx, cur.id)
+		if err := enumerators.ForEach(enumerator, func(edge Edge) error {
+			if _, ok := seen[edge.To]; !ok {
+				stack = append(stack, sItem{edge.To, cur.depth + 1})
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -250,14 +250,14 @@ func (g *graphStore) CollectDFSIDs(ctx context.Context, start string, limit int)
 		if limit > 0 && visited >= limit {
 			return ids, nil
 		}
-		nbrs, err := g.Neighbors(ctx, cur.id)
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range nbrs {
-			if _, ok := seen[e.To]; !ok {
-				stack = append(stack, sItem{e.To, cur.depth + 1})
+		enumerator := g.EnumerateNeighbors(ctx, cur.id)
+		if err := enumerators.ForEach(enumerator, func(edge Edge) error {
+			if _, ok := seen[edge.To]; !ok {
+				stack = append(stack, sItem{edge.To, cur.depth + 1})
 			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 	return ids, nil
