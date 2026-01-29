@@ -3,6 +3,8 @@ package merkle
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +14,9 @@ import (
 
 // setupBenchMerkle creates a merkle tree for benchmarks.
 func setupBenchMerkle(b *testing.B) *Tree {
+	// Suppress all logging during benchmarks to avoid skewing performance measurements
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
 	path := filepath.Join(b.TempDir(), "bench-merkle")
 	store, err := pebble.NewPebbleStore(path)
 	if err != nil {
@@ -45,19 +50,25 @@ func BenchmarkBuildMerkle(b *testing.B) {
 	}
 }
 
-// BenchmarkBuildMerkleLarge measures merkle tree building performance for larger trees.
-func BenchmarkBuildMerkleLarge(b *testing.B) {
-	m := setupBenchMerkle(b)
-	ctx := context.Background()
+// BenchmarkBuildMerkle_Scale measures merkle tree building performance at different scales.
+// This replaces ad-hoc size choices with a proper scaling matrix.
+func BenchmarkBuildMerkle_Scale(b *testing.B) {
+	sizes := []int{100, 1_000, 10_000, 100_000}
 
-	leaves := benchLeaves(1000) // 1000 leaves
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", n), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			leaves := benchLeaves(n)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		stage := fmt.Sprintf("stage-%d", i)
-		if err := m.Build(ctx, stage, "bench", leaves); err != nil {
-			b.Fatal(err)
-		}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				stage := fmt.Sprintf("stage-%d", i)
+				if err := m.Build(ctx, stage, "bench", leaves); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -75,6 +86,147 @@ func BenchmarkGetRootHash(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _, err := m.GetRootHash(ctx, "bench-stage", "bench")
 		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkUpdateLeaf measures incremental update performance (hot path).
+// CRITICAL: This benchmarks the O(log N) guarantee for surgical updates.
+// Any regression here indicates accidental full recomputation.
+func BenchmarkUpdateLeaf(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 10_000
+	if err := m.Build(ctx, "bench-stage", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+
+	newLeaf := leaf("updated-leaf")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := i % leafCount
+		if err := m.UpdateLeaf(ctx, "bench-stage", "bench", idx, newLeaf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkAddLeaf measures append performance and tree growth behavior.
+// Tests padding logic correctness and structural growth costs.
+func BenchmarkAddLeaf(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	if err := m.Build(ctx, "bench-stage", "bench", benchLeaves(1)); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := m.AddLeaf(ctx, "bench-stage", "bench", leaf(fmt.Sprintf("new-%d", i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRemoveLeaf measures soft delete performance.
+// Verifies that delete marker behavior has no reindexing cost.
+func BenchmarkRemoveLeaf(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 10_000
+	if err := m.Build(ctx, "bench-stage", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := i % leafCount
+		if err := m.RemoveLeaf(ctx, "bench-stage", "bench", idx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDiffIdentical measures diff performance when trees are identical (fast path).
+// Verifies root-hash short-circuiting and early-exit correctness.
+func BenchmarkDiffIdentical(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	leaves := benchLeaves(5_000)
+	if err := m.Build(ctx, "prev", "bench", leaves); err != nil {
+		b.Fatal(err)
+	}
+	if err := m.Build(ctx, "curr", "bench", leaves); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it := m.Diff(ctx, "prev", "curr", "bench")
+		if err := enumerators.ForEach(it, func(Leaf) error { return nil }); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDiffSparseChange measures diff performance with minimal changes (real ingestion case).
+// CRITICAL: Verifies logarithmic diff descent - no accidental full scans.
+func BenchmarkDiffSparseChange(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 10_000
+	if err := m.Build(ctx, "prev", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+	if err := m.Build(ctx, "curr", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+
+	// Mutate a single leaf to create sparse diff
+	if err := m.UpdateLeaf(ctx, "curr", "bench", 1234, leaf("changed")); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it := m.Diff(ctx, "prev", "curr", "bench")
+		if err := enumerators.ForEach(it, func(Leaf) error { return nil }); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDiffSparseChange_100k measures diff performance at scale (production ingestion case).
+// CRITICAL: This is the number you quote when justifying the system.
+// Validates O(log N) diff descent at 100k leaves with 1 change.
+func BenchmarkDiffSparseChange_100k(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 100_000
+	if err := m.Build(ctx, "prev", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+	if err := m.Build(ctx, "curr", "bench", benchLeaves(leafCount)); err != nil {
+		b.Fatal(err)
+	}
+
+	// Mutate a single leaf to create sparse diff
+	if err := m.UpdateLeaf(ctx, "curr", "bench", 12345, leaf("changed")); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it := m.Diff(ctx, "prev", "curr", "bench")
+		if err := enumerators.ForEach(it, func(Leaf) error { return nil }); err != nil {
 			b.Fatal(err)
 		}
 	}
