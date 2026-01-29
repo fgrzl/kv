@@ -34,8 +34,8 @@ func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error 
 		return err
 	}
 	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
-	// Use Insert to avoid silently overwriting existing nodes.
-	err = g.store.Insert(ctx, &kv.Item{PK: pk, Value: b})
+	// Use Put to make this operation idempotent (succeeds even if node already exists).
+	err = g.store.Put(ctx, &kv.Item{PK: pk, Value: b})
 	if err != nil {
 		slog.WarnContext(ctx, "failed to add node", "id", id, "err", err)
 		span.RecordError(err)

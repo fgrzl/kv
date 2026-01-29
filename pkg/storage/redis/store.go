@@ -62,7 +62,9 @@ func NewRedisStoreWithClient(client RedisClient, prefix string) kv.KV {
 }
 
 func (r *Store) Clear() {
-	_ = r.client.FlushDB(context.Background()).Err()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.client.FlushDB(ctx).Err()
 }
 
 // mkKeyHex builds the stored key string (hex), applying prefix if present.

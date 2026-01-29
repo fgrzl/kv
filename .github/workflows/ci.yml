@@ -5,10 +5,18 @@ on:
   push:
     branches:
       - "**"
+    paths:
+      - "pkg/**"
+      - "test/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches:
       - main
       - develop
+    paths:
+      - "pkg/**"
+      - "test/**"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
@@ -33,8 +41,21 @@ jobs:
       - name: Ensure dependencies
         run: go mod tidy
 
+      - name: Vet
+        run: go vet ./...
+
       - name: Build
         run: go build ./...
 
+      - name: Pull Containers
+        run: docker compose pull
+
+      - name: Start Containers
+        run: docker compose up -d
+
       - name: Run Tests
         run: go test ./... -v
+
+      - name: Stop Containers
+        if: always()
+        run: docker compose down --volumes
