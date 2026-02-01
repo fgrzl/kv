@@ -2,6 +2,92 @@
 // built on top of kv.KV and lexkey. It is designed to feel like "full text"
 // search for consumers, while internally using simple, Azure Table–friendly
 // indexes (value index + field+value index + field registry + payload table).
+//
+// # Design Philosophy
+//
+// This is NOT Elasticsearch. It is a KV-native search overlay optimized for:
+//   - Projector-driven event sourcing (replay-safe, idempotent)
+//   - Bounded write amplification (incremental updates via token registry)
+//   - No cross-entity joins (IDs-only discovery, hydration is separate)
+//   - Backend portability (Pebble, Redis, Azure Tables, etc.)
+//
+// # Architecture
+//
+// The overlay maintains five logical tables (all KV partitions):
+//
+// 1. Entity Payload: search:{name}:entity → entity payloads
+//   - Opaque bytes returned with search hits
+//   - Optional: can use IDs-only mode and hydrate from source
+//
+// 2. Token Registry: search:{name}:tokens:{entity_id} → {field: [tokens]}
+//   - Tracks which tokens are indexed for each entity
+//   - Enables O(changes) updates instead of O(entity-size)
+//   - Critical for avoiding stale posting leaks
+//
+// 3. Value Index: search:{name}:value:{first_letter} → postings
+//   - Key: (token, entity_id, field)
+//   - Supports cross-field search
+//
+// 4. Field Index: search:{name}:field:{field}:{first_letter} → postings
+//   - Key: (token, entity_id)
+//   - Supports field-scoped search
+//
+// 5. Field Registry: search:{name}:fields → field names
+//   - Tracks discovered fields for UI/UX
+//   - Eventually consistent
+//
+// # Update Semantics
+//
+// Index() performs diff-based incremental updates:
+//   - Load existing token registry (1 read per entity)
+//   - Compute added/removed tokens via set diff
+//   - Delete stale postings (prevents unbounded growth)
+//   - Add new postings
+//   - Update token registry atomically with postings
+//
+// Delete() uses token registry for complete cleanup:
+//   - Removes all postings (value + field indexes)
+//   - Deletes payload
+//   - Deletes token registry
+//   - No long-term index rot
+//
+// # Search Semantics
+//
+// Single-token exact match only:
+//   - Search("golang admin") → matches token "golang" only
+//   - Multi-token AND/OR is intentionally not supported
+//   - Avoids joins, maintains KV-friendly semantics
+//   - Complex queries: call Search() multiple times and intersect at app layer
+//
+// Search returns IDs + matched fields + payloads:
+//   - Payload hydration is optional (can use IDs-only mode)
+//   - Matched fields show where token was found
+//   - Results are unordered (no scoring/ranking)
+//
+// # Replay Safety
+//
+// The overlay is designed for projector-driven indexing:
+//   - Deterministic tokenization (case-insensitive, alphanumeric)
+//   - Idempotent writes (re-indexing same entity is safe)
+//   - Bounded batch operations per partition
+//   - Token registry enables clean re-indexing without leaks
+//
+// Full index rebuild = replay all Index() calls from event log.
+//
+// # Future Extensions
+//
+// Possible without breaking changes:
+//   - IDs-only search mode (skip payload hydration)
+//   - Prefix/fuzzy matching (currently exact token only)
+//   - Optional scoring/ranking (TF-IDF, BM25)
+//   - Cursored pagination over large result sets
+//   - Field-level tokenization strategies
+//
+// Intentionally NOT planned:
+//   - Multi-token joins (use app-layer intersection)
+//   - Cross-entity aggregations
+//   - Graph traversal
+//   - ACID transactions across entities
 package searchoverlay
 
 import (
@@ -9,6 +95,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -95,7 +182,12 @@ type fieldEntry struct {
 	Field string `json:"field"`
 }
 
+// internal token registry: tracks which tokens were indexed for an entity.
+// Key is field name, value is list of tokens.
+type tokenRegistry map[string][]string
+
 // Index indexes or updates an entity's searchable attributes and payload.
+// It performs a diff-based update to avoid leaking stale postings.
 func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 	ctx, span := tracer.Start(ctx, "searchoverlay.Index",
 		trace.WithAttributes(
@@ -113,8 +205,21 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 		return err
 	}
 
+	// Load existing token registry to compute diff
+	oldReg, err := o.loadTokenRegistry(ctx, e.ID)
+	if err != nil {
+		o.log.ErrorContext(ctx, "searchoverlay: failed to load token registry",
+			"index", o.name,
+			"entity_id", e.ID,
+			"err", err,
+		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
 	// Normalize attributes into tokens per field.
-	fieldTokens := make(map[string]map[string]struct{}) // field -> token set
+	newReg := make(tokenRegistry) // field -> []tokens
 	allFields := make(map[string]struct{})
 
 	for _, attr := range e.Attributes {
@@ -125,51 +230,56 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 		allFields[field] = struct{}{}
 
 		val := strings.ToLower(attr.Value)
+		tokenSet := make(map[string]struct{})
 		for _, tok := range tokenize(val) {
-			if tok == "" {
-				continue
+			if tok != "" {
+				tokenSet[tok] = struct{}{}
 			}
-			if fieldTokens[field] == nil {
-				fieldTokens[field] = make(map[string]struct{})
-			}
-			fieldTokens[field][tok] = struct{}{}
+		}
+
+		// Convert set to sorted slice for deterministic registry
+		tokens := make([]string, 0, len(tokenSet))
+		for tok := range tokenSet {
+			tokens = append(tokens, tok)
+		}
+		if len(tokens) > 0 {
+			sort.Strings(tokens)
+			newReg[field] = tokens
 		}
 	}
+
+	// Compute diff: what changed?
+	addedTokens, removedTokens := tokenDiff(oldReg, newReg)
 
 	// Build batches grouped by partition key.
-	// Each partition key must have its own batch operation.
 	batchesByPartition := make(map[string][]*kv.BatchItem)
 
-	// 1) Entity payload table
-	entityPartKey := o.entityPartition()
-	entityPK := lexkey.NewPrimaryKey(entityPartKey, lexkey.Encode(e.ID))
-	batchesByPartition[string(entityPartKey)] = append(batchesByPartition[string(entityPartKey)], &kv.BatchItem{
-		Op:    kv.Put,
-		PK:    entityPK,
-		Value: e.Payload,
-	})
+	// 1) Delete stale postings for removed tokens
+	for field, tokens := range removedTokens {
+		for _, tok := range tokens {
+			firstLetter := partitionKeyForToken(tok)
 
-	// 2) Field registry entries
-	fieldsPartKey := o.fieldsPartition()
-	for field := range allFields {
-		entry := fieldEntry{Field: field}
-		raw, err := json.Marshal(entry)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return err
+			// Remove from value index
+			valuePartKey := o.valuePartition(firstLetter)
+			valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
+			batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
+				Op: kv.Delete,
+				PK: valuePK,
+			})
+
+			// Remove from field+value index
+			fieldPartKey := o.fieldPartition(field, firstLetter)
+			fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
+			batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
+				Op: kv.Delete,
+				PK: fieldPK,
+			})
 		}
-		pk := lexkey.NewPrimaryKey(fieldsPartKey, lexkey.Encode(field))
-		batchesByPartition[string(fieldsPartKey)] = append(batchesByPartition[string(fieldsPartKey)], &kv.BatchItem{
-			Op:    kv.Put,
-			PK:    pk,
-			Value: raw,
-		})
 	}
 
-	// 3) Value index + field+value index
-	for field, tokens := range fieldTokens {
-		for tok := range tokens {
+	// 2) Add new postings for added tokens
+	for field, tokens := range addedTokens {
+		for _, tok := range tokens {
 			firstLetter := partitionKeyForToken(tok)
 
 			// value index: search across all fields
@@ -214,6 +324,40 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 		}
 	}
 
+	// 3) Update entity payload
+	entityPartKey := o.entityPartition()
+	entityPK := lexkey.NewPrimaryKey(entityPartKey, lexkey.Encode(e.ID))
+	batchesByPartition[string(entityPartKey)] = append(batchesByPartition[string(entityPartKey)], &kv.BatchItem{
+		Op:    kv.Put,
+		PK:    entityPK,
+		Value: e.Payload,
+	})
+
+	// 4) Update field registry entries
+	fieldsPartKey := o.fieldsPartition()
+	for field := range allFields {
+		entry := fieldEntry{Field: field}
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
+		pk := lexkey.NewPrimaryKey(fieldsPartKey, lexkey.Encode(field))
+		batchesByPartition[string(fieldsPartKey)] = append(batchesByPartition[string(fieldsPartKey)], &kv.BatchItem{
+			Op:    kv.Put,
+			PK:    pk,
+			Value: raw,
+		})
+	}
+
+	// 5) Update token registry
+	if err := o.saveTokenRegistry(ctx, e.ID, newReg, batchesByPartition); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
 	// Execute each batch grouped by partition key
 	for _, batch := range batchesByPartition {
 		if err := o.store.Batch(ctx, batch); err != nil {
@@ -232,6 +376,8 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 		"index", o.name,
 		"entity_id", e.ID,
 		"field_count", len(allFields),
+		"added_tokens", countTokens(addedTokens),
+		"removed_tokens", countTokens(removedTokens),
 	)
 	return nil
 }
@@ -239,6 +385,11 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 // BatchIndex indexes multiple entities in a single efficient batching operation.
 // This is more efficient than calling Index() multiple times when indexing large
 // numbers of entities, as it amortizes the batch overhead across all entities.
+// It performs diff-based updates to avoid leaking stale postings.
+//
+// Atomicity: BatchIndex is best-effort atomic per partition, not globally atomic.
+// If a batch write fails for one partition, other partitions may have already been
+// written. This is acceptable for a derived index that can be rebuilt from source.
 func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error {
 	ctx, span := tracer.Start(ctx, "searchoverlay.BatchIndex",
 		trace.WithAttributes(
@@ -252,20 +403,62 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 		return nil
 	}
 
-	// Accumulate all batch items grouped by partition key.
-	batchesByPartition := make(map[string][]*kv.BatchItem)
-	allFieldsAcrossEntities := make(map[string]struct{})
-
-	for _, e := range entities {
+	// Load all existing token registries in batch
+	entityIDs := make([]string, len(entities))
+	for i, e := range entities {
 		if e.ID == "" {
 			err := errors.New("searchoverlay: entity ID cannot be empty")
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
+		entityIDs[i] = e.ID
+	}
+
+	tokenPKs := make([]lexkey.PrimaryKey, len(entityIDs))
+	tokenPartKey := o.tokenPartition()
+	for i, id := range entityIDs {
+		tokenPKs[i] = lexkey.NewPrimaryKey(tokenPartKey, lexkey.Encode(id))
+	}
+
+	tokenItems, err := o.store.GetBatch(ctx, tokenPKs...)
+	if err != nil {
+		o.log.ErrorContext(ctx, "searchoverlay: batch load token registries failed",
+			"index", o.name,
+			"err", err,
+		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
+	// Build map of existing registries
+	oldRegistries := make(map[string]tokenRegistry)
+	for i, item := range tokenItems {
+		if item == nil {
+			continue
+		}
+		var reg tokenRegistry
+		if err := json.Unmarshal(item.Value, &reg); err != nil {
+			continue
+		}
+		// Use entity ID from our request list
+		oldRegistries[entityIDs[i]] = reg
+	}
+
+	// Accumulate all batch items grouped by partition key.
+	batchesByPartition := make(map[string][]*kv.BatchItem)
+	allFieldsAcrossEntities := make(map[string]struct{})
+
+	for _, e := range entities {
+		// Get old registry for this entity
+		oldReg, exists := oldRegistries[e.ID]
+		if !exists {
+			oldReg = make(tokenRegistry)
+		}
 
 		// Normalize attributes into tokens per field for this entity.
-		fieldTokens := make(map[string]map[string]struct{}) // field -> token set
+		newReg := make(tokenRegistry) // field -> []tokens
 		entityFields := make(map[string]struct{})
 
 		for _, attr := range e.Attributes {
@@ -277,47 +470,53 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 			allFieldsAcrossEntities[field] = struct{}{}
 
 			val := strings.ToLower(attr.Value)
+			tokenSet := make(map[string]struct{})
 			for _, tok := range tokenize(val) {
-				if tok == "" {
-					continue
+				if tok != "" {
+					tokenSet[tok] = struct{}{}
 				}
-				if fieldTokens[field] == nil {
-					fieldTokens[field] = make(map[string]struct{})
-				}
-				fieldTokens[field][tok] = struct{}{}
+			}
+
+			// Convert set to sorted slice for deterministic registry
+			tokens := make([]string, 0, len(tokenSet))
+			for tok := range tokenSet {
+				tokens = append(tokens, tok)
+			}
+			if len(tokens) > 0 {
+				sort.Strings(tokens)
+				newReg[field] = tokens
 			}
 		}
 
-		// Add entity payload
-		entityPartKey := o.entityPartition()
-		entityPK := lexkey.NewPrimaryKey(entityPartKey, lexkey.Encode(e.ID))
-		batchesByPartition[string(entityPartKey)] = append(batchesByPartition[string(entityPartKey)], &kv.BatchItem{
-			Op:    kv.Put,
-			PK:    entityPK,
-			Value: e.Payload,
-		})
+		// Compute diff: what changed?
+		addedTokens, removedTokens := tokenDiff(oldReg, newReg)
 
-		// Add field registry entries for this entity
-		fieldsPartKey := o.fieldsPartition()
-		for field := range entityFields {
-			entry := fieldEntry{Field: field}
-			raw, err := json.Marshal(entry)
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
-				return err
+		// Delete stale postings for removed tokens
+		for field, tokens := range removedTokens {
+			for _, tok := range tokens {
+				firstLetter := partitionKeyForToken(tok)
+
+				// Remove from value index
+				valuePartKey := o.valuePartition(firstLetter)
+				valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
+				batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
+					Op: kv.Delete,
+					PK: valuePK,
+				})
+
+				// Remove from field+value index
+				fieldPartKey := o.fieldPartition(field, firstLetter)
+				fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
+				batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
+					Op: kv.Delete,
+					PK: fieldPK,
+				})
 			}
-			pk := lexkey.NewPrimaryKey(fieldsPartKey, lexkey.Encode(field))
-			batchesByPartition[string(fieldsPartKey)] = append(batchesByPartition[string(fieldsPartKey)], &kv.BatchItem{
-				Op:    kv.Put,
-				PK:    pk,
-				Value: raw,
-			})
 		}
 
-		// Add value index + field+value index entries
-		for field, tokens := range fieldTokens {
-			for tok := range tokens {
+		// Add new postings for added tokens
+		for field, tokens := range addedTokens {
+			for _, tok := range tokens {
 				firstLetter := partitionKeyForToken(tok)
 
 				// value index: search across all fields
@@ -361,6 +560,40 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 				})
 			}
 		}
+
+		// Add entity payload
+		entityPartKey := o.entityPartition()
+		entityPK := lexkey.NewPrimaryKey(entityPartKey, lexkey.Encode(e.ID))
+		batchesByPartition[string(entityPartKey)] = append(batchesByPartition[string(entityPartKey)], &kv.BatchItem{
+			Op:    kv.Put,
+			PK:    entityPK,
+			Value: e.Payload,
+		})
+
+		// Add field registry entries for this entity
+		fieldsPartKey := o.fieldsPartition()
+		for field := range entityFields {
+			entry := fieldEntry{Field: field}
+			raw, err := json.Marshal(entry)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return err
+			}
+			pk := lexkey.NewPrimaryKey(fieldsPartKey, lexkey.Encode(field))
+			batchesByPartition[string(fieldsPartKey)] = append(batchesByPartition[string(fieldsPartKey)], &kv.BatchItem{
+				Op:    kv.Put,
+				PK:    pk,
+				Value: raw,
+			})
+		}
+
+		// Update token registry
+		if err := o.saveTokenRegistry(ctx, e.ID, newReg, batchesByPartition); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
 	}
 
 	// Execute each batch grouped by partition key
@@ -385,11 +618,9 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 	return nil
 }
 
-// Delete removes an entity's payload and effectively hides it from search results.
-//
-// Note: this currently only deletes the payload row. Index entries remain, but
-// search will skip hits whose payload no longer exists. This keeps deletes
-// cheap and can be refined later to fully clean index rows if needed.
+// Delete removes an entity's payload and all associated index entries.
+// This performs a complete cleanup using the token registry to ensure
+// no stale postings remain in the index.
 func (o *overlay) Delete(ctx context.Context, id string) error {
 	ctx, span := tracer.Start(ctx, "searchoverlay.Delete",
 		trace.WithAttributes(
@@ -406,13 +637,10 @@ func (o *overlay) Delete(ctx context.Context, id string) error {
 		return err
 	}
 
-	entityPK := lexkey.NewPrimaryKey(
-		o.entityPartition(),
-		lexkey.Encode(id),
-	)
-
-	if err := o.store.Remove(ctx, entityPK); err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: delete entity failed",
+	// Load token registry to know what to delete
+	oldReg, err := o.loadTokenRegistry(ctx, id)
+	if err != nil {
+		o.log.ErrorContext(ctx, "searchoverlay: failed to load token registry for delete",
 			"index", o.name,
 			"entity_id", id,
 			"err", err,
@@ -422,9 +650,60 @@ func (o *overlay) Delete(ctx context.Context, id string) error {
 		return err
 	}
 
-	o.log.DebugContext(ctx, "searchoverlay: entity payload deleted",
+	batchesByPartition := make(map[string][]*kv.BatchItem)
+
+	// Delete all postings for this entity
+	for field, tokens := range oldReg {
+		for _, tok := range tokens {
+			firstLetter := partitionKeyForToken(tok)
+
+			// Remove from value index
+			valuePartKey := o.valuePartition(firstLetter)
+			valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, id, field))
+			batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
+				Op: kv.Delete,
+				PK: valuePK,
+			})
+
+			// Remove from field+value index
+			fieldPartKey := o.fieldPartition(field, firstLetter)
+			fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, id))
+			batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
+				Op: kv.Delete,
+				PK: fieldPK,
+			})
+		}
+	}
+
+	// Delete entity payload
+	entityPartKey := o.entityPartition()
+	entityPK := lexkey.NewPrimaryKey(entityPartKey, lexkey.Encode(id))
+	batchesByPartition[string(entityPartKey)] = append(batchesByPartition[string(entityPartKey)], &kv.BatchItem{
+		Op: kv.Delete,
+		PK: entityPK,
+	})
+
+	// Delete token registry
+	o.deleteTokenRegistry(ctx, id, batchesByPartition)
+
+	// Execute each batch grouped by partition key
+	for _, batch := range batchesByPartition {
+		if err := o.store.Batch(ctx, batch); err != nil {
+			o.log.ErrorContext(ctx, "searchoverlay: delete batch failed",
+				"index", o.name,
+				"entity_id", id,
+				"err", err,
+			)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
+	}
+
+	o.log.DebugContext(ctx, "searchoverlay: entity fully deleted",
 		"index", o.name,
 		"entity_id", id,
+		"postings_deleted", countTokens(oldReg),
 	)
 	return nil
 }
@@ -450,7 +729,11 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 	if len(toks) == 0 {
 		return nil, nil
 	}
-	// For now we use the first token only; more complex token logic can be added later.
+
+	// Single-token search: We use the first token only.
+	// Multi-token AND/OR queries are intentionally not implemented to avoid
+	// join operations and maintain KV-friendly semantics. For complex queries,
+	// use multiple Search calls and intersect/union results at the application layer.
 	token := toks[0]
 	firstLetter := partitionKeyForToken(token)
 
@@ -587,6 +870,10 @@ func (o *overlay) fieldsPartition() lexkey.LexKey {
 	return lexkey.Encode("search", o.name, "fields")
 }
 
+func (o *overlay) tokenPartition() lexkey.LexKey {
+	return lexkey.Encode("search", o.name, "tokens")
+}
+
 func (o *overlay) valuePartition(firstLetter string) lexkey.LexKey {
 	return lexkey.Encode("search", o.name, "value", firstLetter)
 }
@@ -644,9 +931,11 @@ func (o *overlay) searchValueIndex(
 	args := kv.QueryArgs{
 		PartitionKey: o.valuePartition(firstLetter),
 		StartRowKey:  lexkey.Encode(token),
-		EndRowKey:    lexkey.Empty,
-		Operator:     kv.Scan,
-		Limit:        limit,
+		// Use Encode(token+"\xFF") to match only keys starting with exact token
+		// This ensures we don't match "python" when searching for "programming"
+		EndRowKey: lexkey.Encode(token + string(rune(0xFF))),
+		Operator:  kv.Between,
+		Limit:     limit,
 	}
 
 	items, err := o.store.Query(ctx, args, kv.Ascending)
@@ -694,9 +983,10 @@ func (o *overlay) searchFieldIndexes(
 		args := kv.QueryArgs{
 			PartitionKey: o.fieldPartition(field, firstLetter),
 			StartRowKey:  lexkey.Encode(token),
-			EndRowKey:    lexkey.Empty,
-			Operator:     kv.Scan,
-			Limit:        limit,
+			// Use Encode(token+"\xFF") to match only keys starting with exact token
+			EndRowKey: lexkey.Encode(token + string(rune(0xFF))),
+			Operator:  kv.Between,
+			Limit:     limit,
 		}
 
 		items, err := o.store.Query(ctx, args, kv.Ascending)
@@ -787,4 +1077,101 @@ func (o *overlay) hydrateHits(
 	}
 
 	return hits, nil
+}
+
+// loadTokenRegistry retrieves the stored token registry for an entity.
+func (o *overlay) loadTokenRegistry(ctx context.Context, entityID string) (tokenRegistry, error) {
+	pk := lexkey.NewPrimaryKey(
+		o.tokenPartition(),
+		lexkey.Encode(entityID),
+	)
+
+	item, err := o.store.Get(ctx, pk)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		// Not found, return empty registry
+		return make(tokenRegistry), nil
+	}
+
+	var reg tokenRegistry
+	if err := json.Unmarshal(item.Value, &reg); err != nil {
+		return nil, err
+	}
+	return reg, nil
+}
+
+// saveTokenRegistry stores the token registry for an entity.
+func (o *overlay) saveTokenRegistry(ctx context.Context, entityID string, reg tokenRegistry, batch map[string][]*kv.BatchItem) error {
+	raw, err := json.Marshal(reg)
+	if err != nil {
+		return err
+	}
+
+	tokenPartKey := o.tokenPartition()
+	pk := lexkey.NewPrimaryKey(tokenPartKey, lexkey.Encode(entityID))
+	batch[string(tokenPartKey)] = append(batch[string(tokenPartKey)], &kv.BatchItem{
+		Op:    kv.Put,
+		PK:    pk,
+		Value: raw,
+	})
+	return nil
+}
+
+// deleteTokenRegistry removes the token registry for an entity.
+func (o *overlay) deleteTokenRegistry(ctx context.Context, entityID string, batch map[string][]*kv.BatchItem) {
+	tokenPartKey := o.tokenPartition()
+	pk := lexkey.NewPrimaryKey(tokenPartKey, lexkey.Encode(entityID))
+	batch[string(tokenPartKey)] = append(batch[string(tokenPartKey)], &kv.BatchItem{
+		Op: kv.Delete,
+		PK: pk,
+	})
+}
+
+// tokenDiff computes added and removed tokens between old and new registries.
+func tokenDiff(oldReg, newReg tokenRegistry) (added, removed tokenRegistry) {
+	added = make(tokenRegistry)
+	removed = make(tokenRegistry)
+
+	// Find removed tokens: in old but not in new
+	for field, oldTokens := range oldReg {
+		newTokens := newReg[field]
+		newSet := make(map[string]struct{})
+		for _, t := range newTokens {
+			newSet[t] = struct{}{}
+		}
+
+		for _, tok := range oldTokens {
+			if _, exists := newSet[tok]; !exists {
+				removed[field] = append(removed[field], tok)
+			}
+		}
+	}
+
+	// Find added tokens: in new but not in old
+	for field, newTokens := range newReg {
+		oldTokens := oldReg[field]
+		oldSet := make(map[string]struct{})
+		for _, t := range oldTokens {
+			oldSet[t] = struct{}{}
+		}
+
+		for _, tok := range newTokens {
+			if _, exists := oldSet[tok]; !exists {
+				added[field] = append(added[field], tok)
+			}
+		}
+	}
+
+	return added, removed
+}
+
+// countTokens returns the total number of tokens across all fields in a registry.
+func countTokens(reg tokenRegistry) int {
+	count := 0
+	for _, tokens := range reg {
+		count += len(tokens)
+	}
+	return count
 }
