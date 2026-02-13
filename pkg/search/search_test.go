@@ -297,7 +297,7 @@ func TestShouldRespectResultLimitParameter(t *testing.T) {
 	assert.Len(t, results, 2)
 }
 
-func TestShouldPageSearchResultsByHitCount(t *testing.T) {
+func TestShouldPageSearchResultsByScore(t *testing.T) {
 	// Arrange
 	overlay := createTestOverlay(t)
 	ctx := context.Background()
@@ -358,6 +358,45 @@ func TestShouldPageSearchResultsByHitCount(t *testing.T) {
 	require.Len(t, page3.Models, 1)
 	assert.Equal(t, "c", page3.Models[0].ID)
 	assert.Empty(t, page3.Next)
+}
+
+func TestSearchShouldSortByScore(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+				{Field: "body", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act
+	results, err := overlay.Search(ctx, Query{Text: "golang"})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, "a", results[0].ID)
+	assert.Greater(t, results[0].Score, results[1].Score)
+	assert.Greater(t, results[0].Score, 0.0)
 }
 
 func TestShouldRejectInvalidPageCursor(t *testing.T) {
@@ -497,7 +536,6 @@ func TestSearchPageFieldFiltered(t *testing.T) {
 	// Assert - Should find "a" and "b" in title field only
 	require.NoError(t, err)
 	require.Len(t, page1.Models, 1)
-	assert.Equal(t, "a", page1.Models[0].ID)
 	assert.NotEmpty(t, page1.Next)
 
 	// Act - Get next page
@@ -506,8 +544,16 @@ func TestSearchPageFieldFiltered(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	require.Len(t, page2.Models, 1)
-	assert.Equal(t, "b", page2.Models[0].ID)
 	assert.Empty(t, page2.Next) // No more pages
+
+	ids := map[string]struct{}{
+		page1.Models[0].ID: {},
+		page2.Models[0].ID: {},
+	}
+	_, hasA := ids["a"]
+	_, hasB := ids["b"]
+	assert.True(t, hasA)
+	assert.True(t, hasB)
 }
 
 func TestSearchPageEmptyText(t *testing.T) {

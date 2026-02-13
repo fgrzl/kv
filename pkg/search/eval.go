@@ -18,7 +18,12 @@ const (
 // evaluateMultiToken evaluates a multi-token query against the index.
 // It returns entity IDs that match the query expression.
 // Phase 5: Supports complex boolean expressions on multiple tokens.
-func (o *overlay) evaluateMultiToken(ctx context.Context, query QueryExpr, fields map[string]struct{}, limit int) (map[string]map[string]struct{}, error) {
+func (o *overlay) evaluateMultiToken(
+	ctx context.Context,
+	query QueryExpr,
+	fields map[string]struct{},
+	limit int,
+) (map[string]map[string]struct{}, map[string]map[string]map[string]struct{}, error) {
 	// Build result set for each token (entity -> matched fields)
 	tokenResults := make(map[string]map[string]map[string]struct{}) // token -> entityID -> fields
 
@@ -39,11 +44,11 @@ func (o *overlay) evaluateMultiToken(ctx context.Context, query QueryExpr, field
 				// Query index for this word with specified fields or all fields
 				if len(fields) == 0 {
 					if err := o.searchValueIndex(ctx, word, firstLetter, limit, postingsByEntity); err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 				} else {
 					if err := o.searchFieldIndexes(ctx, word, firstLetter, limit, fields, postingsByEntity); err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 				}
 
@@ -79,11 +84,11 @@ func (o *overlay) evaluateMultiToken(ctx context.Context, query QueryExpr, field
 			// Query index for this token with specified fields or all fields
 			if len(fields) == 0 {
 				if err := o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			} else {
 				if err := o.searchFieldIndexes(ctx, token, firstLetter, limit, fields, postingsByEntity); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 
@@ -92,7 +97,7 @@ func (o *overlay) evaluateMultiToken(ctx context.Context, query QueryExpr, field
 	}
 
 	// Evaluate boolean expression based on query structure
-	return o.combineBooleanResults(tokenResults, query), nil
+	return o.combineBooleanResults(tokenResults, query), tokenResults, nil
 }
 
 // combineBooleanResults applies the boolean query logic to combine token result sets.

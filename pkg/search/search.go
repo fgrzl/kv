@@ -62,7 +62,7 @@
 // Search returns IDs + matched fields + payloads:
 //   - Payload hydration is optional (can use IDs-only mode)
 //   - Matched fields show where token was found
-//   - Results are unordered (no scoring/ranking)
+//   - Results are ranked by score (approximate BM25)
 //
 // # Replay Safety
 //
@@ -96,6 +96,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,6 +201,7 @@ type SearchHit struct {
 	ID            string
 	MatchedFields []string
 	Payload       []byte
+	Score         float64
 }
 
 // GetDiscriminator implements polymorphic.Polymorphic.
@@ -860,6 +862,7 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 
 	// Collect postings from either value index or field+value index.
 	var postingsByEntity map[string]map[string]struct{}
+	var tokenResults map[string]map[string]map[string]struct{}
 	var err error
 
 	// Phase 5b optimization: For single-token queries without NOT, use optimized single-token path
@@ -873,6 +876,9 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 		token := query.Tokens[0].Text
 		firstLetter := partitionKeyForToken(token)
 		postingsByEntity = make(map[string]map[string]struct{})
+		tokenResults = map[string]map[string]map[string]struct{}{
+			token: postingsByEntity,
+		}
 
 		if len(fieldSet) == 0 {
 			if err = o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
@@ -889,7 +895,7 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 		}
 	} else {
 		// Multi-token, quoted phrase with spaces, or special case: use boolean evaluation
-		postingsByEntity, err = o.evaluateMultiToken(ctx, query, fieldSet, limit)
+		postingsByEntity, tokenResults, err = o.evaluateMultiToken(ctx, query, fieldSet, limit)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -907,12 +913,25 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 		entityIDs = append(entityIDs, id)
 	}
 
-	hits, err := o.hydrateHits(ctx, entityIDs, postingsByEntity)
+	scoresByEntity, err := o.scoreCandidates(ctx, query, postingsByEntity, tokenResults)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+
+	hits, err := o.hydrateHits(ctx, entityIDs, postingsByEntity, scoresByEntity)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	hitCounts := make(map[string]int, len(postingsByEntity))
+	for id, fields := range postingsByEntity {
+		hitCounts[id] = len(fields)
+	}
+	sortHitsByScore(hits, hitCounts)
 
 	// Apply final limit if needed.
 	if q.Limit > 0 && len(hits) > q.Limit {
@@ -928,7 +947,7 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 }
 
 // SearchPage performs a keyword search and returns a single page of results.
-// Results are ranked by hit count (descending), then by entity ID (ascending).
+// Results are ranked by score (descending), then by hit count and entity ID.
 func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page[SearchHit], error) {
 	ctx, span := tracer.Start(ctx, "searchoverlay.SearchPage",
 		trace.WithAttributes(
@@ -972,6 +991,7 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 
 	// Collect postings from either value index or field+value index.
 	var postingsByEntity map[string]map[string]struct{}
+	var tokenResults map[string]map[string]map[string]struct{}
 	var err error
 
 	// Phase 5b optimization: For single-token queries without NOT, use optimized single-token path
@@ -980,6 +1000,9 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 		token := query.Tokens[0].Text
 		firstLetter := partitionKeyForToken(token)
 		postingsByEntity = make(map[string]map[string]struct{})
+		tokenResults = map[string]map[string]map[string]struct{}{
+			token: postingsByEntity,
+		}
 
 		if len(fieldSet) == 0 {
 			if err = o.searchValueIndex(ctx, token, firstLetter, effectiveScanLimit, postingsByEntity); err != nil {
@@ -996,7 +1019,7 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 		}
 	} else {
 		// Multi-token or special case: use boolean evaluation
-		postingsByEntity, err = o.evaluateMultiToken(ctx, query, fieldSet, effectiveScanLimit)
+		postingsByEntity, tokenResults, err = o.evaluateMultiToken(ctx, query, fieldSet, effectiveScanLimit)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -1015,11 +1038,19 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 		return polymorphic.Page[SearchHit]{}, err
 	}
 
+	scoresByEntity, err := o.scoreCandidates(ctx, query, postingsByEntity, tokenResults)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return polymorphic.Page[SearchHit]{}, err
+	}
+
 	candidates := make([]rankedCandidate, 0, len(postingsByEntity))
 	for id, fields := range postingsByEntity {
 		candidates = append(candidates, rankedCandidate{
 			ID:       id,
 			HitCount: len(fields),
+			Score:    scoresByEntity[id],
 		})
 	}
 
@@ -1028,6 +1059,9 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 	// making heap-based top-K optimization incompatible.
 	// Future optimization: batch-mode pagination that collects top-K with same rank.
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
 		if candidates[i].HitCount != candidates[j].HitCount {
 			return candidates[i].HitCount > candidates[j].HitCount
 		}
@@ -1058,7 +1092,7 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 		return polymorphic.Page[SearchHit]{}, nil
 	}
 
-	hits, err := o.hydrateHits(ctx, pageIDs, postingsByEntity)
+	hits, err := o.hydrateHits(ctx, pageIDs, postingsByEntity, scoresByEntity)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -1394,6 +1428,7 @@ func (o *overlay) hydrateHits(
 	ctx context.Context,
 	entityIDs []string,
 	postingsByEntity map[string]map[string]struct{},
+	scoresByEntity map[string]float64,
 ) ([]SearchHit, error) {
 	// Build primary keys for batch get.
 	pks := make([]lexkey.PrimaryKey, 0, len(entityIDs))
@@ -1441,10 +1476,15 @@ func (o *overlay) hydrateHits(
 		for f := range fieldsSet {
 			fields = append(fields, f)
 		}
+		score := 0.0
+		if scoresByEntity != nil {
+			score = scoresByEntity[id]
+		}
 		hits = append(hits, SearchHit{
 			ID:            id,
 			MatchedFields: fields,
 			Payload:       payload,
+			Score:         score,
 		})
 	}
 
@@ -1454,9 +1494,11 @@ func (o *overlay) hydrateHits(
 type rankedCandidate struct {
 	ID       string
 	HitCount int
+	Score    float64
 }
 
 type pageCursor struct {
+	Score    float64
 	HitCount int
 	ID       string
 	Valid    bool
@@ -1465,6 +1507,12 @@ type pageCursor struct {
 func (c pageCursor) allows(candidate rankedCandidate) bool {
 	if !c.Valid {
 		return true
+	}
+	if candidate.Score < c.Score {
+		return true
+	}
+	if candidate.Score > c.Score {
+		return false
 	}
 	if candidate.HitCount < c.HitCount {
 		return true
@@ -1481,20 +1529,210 @@ func parseCursor(raw string) (pageCursor, error) {
 	}
 	// BUG FIX: Use "||" delimiter instead of "|" to avoid conflicts with entity IDs containing pipes
 	// Example: entity ID "item|variant" would be incorrectly split with single pipe delimiter
-	parts := strings.SplitN(raw, "||", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	parts := strings.Split(raw, "||")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return pageCursor{}, errors.New("searchoverlay: invalid cursor")
 	}
-	hitCount, err := strconv.Atoi(parts[0])
+	score, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return pageCursor{}, errors.New("searchoverlay: invalid cursor")
+	}
+	hitCount, err := strconv.Atoi(parts[1])
 	if err != nil || hitCount < 0 {
 		return pageCursor{}, errors.New("searchoverlay: invalid cursor")
 	}
-	return pageCursor{HitCount: hitCount, ID: parts[1], Valid: true}, nil
+	return pageCursor{Score: score, HitCount: hitCount, ID: parts[2], Valid: true}, nil
 }
 
 func encodeCursor(candidate rankedCandidate) string {
 	// BUG FIX: Use "||" delimiter instead of "|" to avoid conflicts with entity IDs
-	return strconv.Itoa(candidate.HitCount) + "||" + candidate.ID
+	return strconv.FormatFloat(candidate.Score, 'g', -1, 64) + "||" + strconv.Itoa(candidate.HitCount) + "||" + candidate.ID
+}
+
+func (o *overlay) scoreCandidates(
+	ctx context.Context,
+	query QueryExpr,
+	postingsByEntity map[string]map[string]struct{},
+	tokenResults map[string]map[string]map[string]struct{},
+) (map[string]float64, error) {
+	entityIDs := make([]string, 0, len(postingsByEntity))
+	for id := range postingsByEntity {
+		entityIDs = append(entityIDs, id)
+	}
+
+	scores := make(map[string]float64, len(entityIDs))
+	positiveTokens := positiveQueryTokens(query)
+	if len(entityIDs) == 0 || len(positiveTokens) == 0 {
+		return scores, nil
+	}
+
+	docCount, totalDocLen, err := o.computeCorpusStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if docCount == 0 {
+		return scores, nil
+	}
+	avgDocLen := float64(totalDocLen) / float64(docCount)
+	if avgDocLen <= 0 {
+		return scores, nil
+	}
+
+	docLengths, err := o.loadDocLengths(ctx, entityIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	dfByToken := make(map[string]int, len(positiveTokens))
+	for _, token := range positiveTokens {
+		dfByToken[token] = len(tokenResults[token])
+	}
+
+	for _, id := range entityIDs {
+		docLen := float64(docLengths[id])
+		if docLen <= 0 {
+			docLen = 1
+		}
+		score := 0.0
+		for _, token := range positiveTokens {
+			entityFields := tokenResults[token][id]
+			if entityFields == nil {
+				continue
+			}
+			tf := float64(len(entityFields))
+			if tf <= 0 {
+				continue
+			}
+			df := float64(dfByToken[token])
+			if df <= 0 {
+				continue
+			}
+			score += bm25Score(tf, df, float64(docCount), docLen, avgDocLen)
+		}
+		scores[id] = score
+	}
+
+	return scores, nil
+}
+
+func (o *overlay) computeCorpusStats(ctx context.Context) (docCount int, totalDocLen int, err error) {
+	args := kv.QueryArgs{
+		PartitionKey: o.tokenPartition(),
+		StartRowKey:  lexkey.Empty,
+		EndRowKey:    lexkey.Empty,
+		Operator:     kv.Scan,
+	}
+
+	items, err := o.store.Query(ctx, args, kv.Ascending)
+	if err != nil {
+		o.log.ErrorContext(ctx, "searchoverlay: token registry scan failed",
+			"index", o.name,
+			"err", err,
+		)
+		return 0, 0, err
+	}
+
+	for _, it := range items {
+		var reg tokenRegistry
+		if err := json.Unmarshal(it.Value, &reg); err != nil {
+			o.log.WarnContext(ctx, "searchoverlay: skipping malformed token registry",
+				"index", o.name,
+				"err", err,
+			)
+			continue
+		}
+		docCount++
+		totalDocLen += countTokens(reg)
+	}
+
+	return docCount, totalDocLen, nil
+}
+
+func (o *overlay) loadDocLengths(ctx context.Context, entityIDs []string) (map[string]int, error) {
+	pks := make([]lexkey.PrimaryKey, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		pk := lexkey.NewPrimaryKey(
+			o.tokenPartition(),
+			lexkey.Encode(id),
+		)
+		pks = append(pks, pk)
+	}
+
+	items, err := o.store.GetBatch(ctx, pks...)
+	if err != nil {
+		o.log.ErrorContext(ctx, "searchoverlay: token registry GetBatch failed",
+			"index", o.name,
+			"err", err,
+		)
+		return nil, err
+	}
+
+	lengths := make(map[string]int, len(entityIDs))
+	for i, it := range items {
+		id := entityIDs[i]
+		if it == nil {
+			lengths[id] = 0
+			continue
+		}
+		var reg tokenRegistry
+		if err := json.Unmarshal(it.Value, &reg); err != nil {
+			lengths[id] = 0
+			continue
+		}
+		lengths[id] = countTokens(reg)
+	}
+
+	return lengths, nil
+}
+
+func positiveQueryTokens(query QueryExpr) []string {
+	set := make(map[string]struct{})
+	for _, tok := range query.Tokens {
+		if tok.IsNot {
+			continue
+		}
+		if tok.Text == "" {
+			continue
+		}
+		set[tok.Text] = struct{}{}
+	}
+
+	out := make([]string, 0, len(set))
+	for token := range set {
+		out = append(out, token)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func bm25Score(tf, df, totalDocs, docLen, avgDocLen float64) float64 {
+	if df <= 0 || totalDocs <= 0 || avgDocLen <= 0 {
+		return 0
+	}
+
+	const (
+		k1 = 1.2
+		b  = 0.75
+	)
+
+	idf := math.Log(1 + (totalDocs-df+0.5)/(df+0.5))
+	normalization := tf + k1*(1-b+b*(docLen/avgDocLen))
+	if normalization == 0 {
+		return 0
+	}
+	return idf * ((tf * (k1 + 1)) / normalization)
+}
+
+func sortHitsByScore(hits []SearchHit, hitCounts map[string]int) {
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].Score != hits[j].Score {
+			return hits[i].Score > hits[j].Score
+		}
+		if hitCounts[hits[i].ID] != hitCounts[hits[j].ID] {
+			return hitCounts[hits[i].ID] > hitCounts[hits[j].ID]
+		}
+		return hits[i].ID < hits[j].ID
+	})
 }
 
 // loadTokenRegistry retrieves the stored token registry for an entity.
