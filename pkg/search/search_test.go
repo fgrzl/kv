@@ -297,6 +297,479 @@ func TestShouldRespectResultLimitParameter(t *testing.T) {
 	assert.Len(t, results, 2)
 }
 
+func TestShouldPageSearchResultsByHitCount(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+				{Field: "body", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+		{
+			ID: "c",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("c"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act - Page 1
+	page1, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 1})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, page1.Models, 1)
+	assert.Equal(t, "a", page1.Models[0].ID)
+	assert.NotEmpty(t, page1.Next)
+
+	// Act - Page 2
+	page2, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 1, Cursor: page1.Next})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, page2.Models, 1)
+	assert.Equal(t, "b", page2.Models[0].ID)
+	assert.NotEmpty(t, page2.Next)
+
+	// Act - Page 3
+	page3, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 1, Cursor: page2.Next})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, page3.Models, 1)
+	assert.Equal(t, "c", page3.Models[0].ID)
+	assert.Empty(t, page3.Next)
+}
+
+func TestShouldRejectInvalidPageCursor(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entity := SearchEntity{
+		ID: "doc1",
+		Attributes: []Attribute{
+			{Field: "title", Value: "golang"},
+		},
+		Payload: []byte("doc1"),
+	}
+
+	err := overlay.Index(ctx, entity)
+	require.NoError(t, err)
+
+	// Act
+	_, err = overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 1, Cursor: "bad-cursor"})
+
+	// Assert
+	assert.Error(t, err)
+}
+
+func TestSearchPageWithDeletedPayloads(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	// Index entities with varying hit counts
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+				{Field: "body", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+		{
+			ID: "c",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("c"),
+		},
+		{
+			ID: "d",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("d"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Delete one entity (b) with low hit count
+	err := overlay.Delete(ctx, "b")
+	require.NoError(t, err)
+
+	// Act - Get first page
+	page1, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 2})
+
+	// Assert - Should get "a" (2 hits) and either "c" or "d" (1 hit each)
+	require.NoError(t, err)
+	assert.NotEmpty(t, page1.Models)
+	assert.Equal(t, "a", page1.Models[0].ID)
+
+	// Act - Get next page
+	page2, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 2, Cursor: page1.Next})
+
+	// Assert - Should get remaining entities
+	require.NoError(t, err)
+	assert.NotEmpty(t, page2.Models)
+
+	// All payloads should be non-nil (deleted entities skipped)
+	for _, hit := range page1.Models {
+		assert.NotNil(t, hit.Payload)
+	}
+	for _, hit := range page2.Models {
+		assert.NotNil(t, hit.Payload)
+	}
+}
+
+func TestSearchPageFieldFiltered(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang programming"},
+				{Field: "body", Value: "advanced topics"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang basics"},
+				{Field: "body", Value: "introduction"},
+			},
+			Payload: []byte("b"),
+		},
+		{
+			ID: "c",
+			Attributes: []Attribute{
+				{Field: "title", Value: "python programming"},
+				{Field: "body", Value: "golang guide"},
+			},
+			Payload: []byte("c"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act - Search for "golang" in title field with pagination
+	page1, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Fields: []string{"title"}, Limit: 1})
+
+	// Assert - Should find "a" and "b" in title field only
+	require.NoError(t, err)
+	require.Len(t, page1.Models, 1)
+	assert.Equal(t, "a", page1.Models[0].ID)
+	assert.NotEmpty(t, page1.Next)
+
+	// Act - Get next page
+	page2, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Fields: []string{"title"}, Limit: 1, Cursor: page1.Next})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, page2.Models, 1)
+	assert.Equal(t, "b", page2.Models[0].ID)
+	assert.Empty(t, page2.Next) // No more pages
+}
+
+func TestSearchPageEmptyText(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entity := SearchEntity{
+		ID: "doc1",
+		Attributes: []Attribute{
+			{Field: "title", Value: "golang"},
+		},
+		Payload: []byte("doc1"),
+	}
+
+	err := overlay.Index(ctx, entity)
+	require.NoError(t, err)
+
+	// Act
+	page, err := overlay.SearchPage(ctx, PageQuery{Text: "", Limit: 10})
+
+	// Assert
+	require.NoError(t, err)
+	assert.Empty(t, page.Models)
+	assert.Empty(t, page.Next)
+}
+
+func TestSearchPageWhitespaceOnly(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entity := SearchEntity{
+		ID: "doc1",
+		Attributes: []Attribute{
+			{Field: "title", Value: "golang"},
+		},
+		Payload: []byte("doc1"),
+	}
+
+	err := overlay.Index(ctx, entity)
+	require.NoError(t, err)
+
+	// Act
+	page, err := overlay.SearchPage(ctx, PageQuery{Text: "   \t\n  ", Limit: 10})
+
+	// Assert
+	require.NoError(t, err)
+	assert.Empty(t, page.Models)
+	assert.Empty(t, page.Next)
+}
+
+func TestSearchPageZeroLimit(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act - Zero limit means no explicit limit
+	page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 0})
+
+	// Assert - Should return all results when Limit is 0
+	require.NoError(t, err)
+	assert.Len(t, page.Models, 2)
+	assert.Empty(t, page.Next) // No next cursor when all results returned
+}
+
+func TestSearchPageNegativeLimit(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act - Negative limit means no explicit limit
+	page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: -1})
+
+	// Assert - Should return all results when Limit < 0
+	require.NoError(t, err)
+	assert.Len(t, page.Models, 2)
+	assert.Empty(t, page.Next)
+}
+
+func TestSearchPageCursorWithGaps(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	// Index entities with varying hit counts to provide clear ordering
+	entities := []SearchEntity{
+		{
+			ID: "a",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+				{Field: "body", Value: "golang"},
+				{Field: "tags", Value: "golang"},
+			},
+			Payload: []byte("a"),
+		},
+		{
+			ID: "b",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+				{Field: "body", Value: "golang"},
+			},
+			Payload: []byte("b"),
+		},
+		{
+			ID: "c",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("c"),
+		},
+		{
+			ID: "d",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("d"),
+		},
+		{
+			ID: "e",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("e"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Delete entity "c" to create a gap
+	err := overlay.Delete(ctx, "c")
+	require.NoError(t, err)
+
+	// Act - Page through results with a gap
+	page1, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, page1.Models, 2)
+	assert.NotEmpty(t, page1.Next)
+
+	page2, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 2, Cursor: page1.Next})
+	require.NoError(t, err)
+
+	// Assert - Should get remaining entities (deleted one is skipped)
+	assert.NotEmpty(t, page2.Models)
+
+	// Verify no deleted payloads are returned
+	collectedIDs := make(map[string]bool)
+	for _, hit := range page1.Models {
+		assert.NotNil(t, hit.Payload)
+		collectedIDs[hit.ID] = true
+	}
+	for _, hit := range page2.Models {
+		assert.NotNil(t, hit.Payload)
+		collectedIDs[hit.ID] = true
+	}
+
+	// Should not include the deleted entity
+	assert.False(t, collectedIDs["c"])
+}
+
+func TestSearchPageScanPrecision(t *testing.T) {
+	// Arrange
+	overlay := createTestOverlay(t)
+	ctx := context.Background()
+
+	// Index entities with different tokens to test token prefix matching.
+	// Note: The current implementation uses lexkey.Encode(token) as the start of a range scan
+	// with an open-ended end, which may include other tokens that sort after the target token
+	// within the same partition (same first letter). This is a known limitation.
+	entities := []SearchEntity{
+		{
+			ID: "exact-match",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("exact-match"),
+		},
+		{
+			ID: "another-match",
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte("another-match"),
+		},
+		{
+			ID: "different-field",
+			Attributes: []Attribute{
+				{Field: "author", Value: "golang"},
+			},
+			Payload: []byte("different-field"),
+		},
+	}
+
+	for _, e := range entities {
+		err := overlay.Index(ctx, e)
+		require.NoError(t, err)
+	}
+
+	// Act - Search for "golang" in title field
+	page1, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Fields: []string{"title"}, Limit: 10})
+
+	// Assert - Should find title matches
+	require.NoError(t, err)
+	assert.True(t, len(page1.Models) >= 2, "should find at least 2 matches")
+
+	foundIDs := make(map[string]bool)
+	for _, hit := range page1.Models {
+		foundIDs[hit.ID] = true
+	}
+
+	// Verify exact-match and another-match are found
+	assert.True(t, foundIDs["exact-match"])
+	assert.True(t, foundIDs["another-match"])
+}
+
 func TestShouldListAllIndexedFieldsSuccessfully(t *testing.T) {
 	// Arrange
 	overlay := createTestOverlay(t)

@@ -328,3 +328,231 @@ func BenchmarkConcurrentSearch(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkSearchPageSmallLimit measures SearchPage performance with small limit (10 results).
+// This benchmarks the common case of returning a small page of results from a large result set.
+func BenchmarkSearchPageSmallLimit(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 10K entities using BatchIndex for efficiency.
+	// With 10 variations of the first word, each token appears ~1000 times.
+	entities := make([]SearchEntity, 0, 10000)
+	for i := 0; i < 10000; i++ {
+		entities = append(entities, SearchEntity{
+			ID: fmt.Sprintf("entity-%d", i),
+			Attributes: []Attribute{
+				{Field: "title", Value: fmt.Sprintf("golang programming guide part %d", i%10)},
+				{Field: "body", Value: fmt.Sprintf("Advanced topics about golang programming %d", i)},
+			},
+			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 10})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Models) != 10 {
+			b.Fatalf("expected 10 results, got %d", len(page.Models))
+		}
+	}
+}
+
+// BenchmarkSearchPageMediumLimit measures SearchPage performance with medium limit (100 results).
+func BenchmarkSearchPageMediumLimit(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 50K entities using BatchIndex for efficiency.
+	entities := make([]SearchEntity, 0, 50000)
+	for i := 0; i < 50000; i++ {
+		entities = append(entities, SearchEntity{
+			ID: fmt.Sprintf("entity-%d", i),
+			Attributes: []Attribute{
+				{Field: "title", Value: fmt.Sprintf("golang programming guide %d", i%10)},
+				{Field: "body", Value: fmt.Sprintf("Content about golang %d", i)},
+			},
+			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 100})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Models) != 100 {
+			b.Fatalf("expected 100 results, got %d", len(page.Models))
+		}
+	}
+}
+
+// BenchmarkSearchPageLargeLimit measures SearchPage performance with large/no limit.
+// This tests throughput for returning all matching results at once.
+func BenchmarkSearchPageLargeLimit(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 10K entities with high token cardinality (1000 variations).
+	entities := make([]SearchEntity, 0, 10000)
+	for i := 0; i < 10000; i++ {
+		entities = append(entities, SearchEntity{
+			ID: fmt.Sprintf("entity-%d", i),
+			Attributes: []Attribute{
+				{Field: "title", Value: fmt.Sprintf("golang programming guide detail %d", i%1000)},
+				{Field: "body", Value: fmt.Sprintf("Content %d", i)},
+			},
+			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Limit 0 means no explicit limit; return all results
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 0})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Models) == 0 {
+			b.Fatal("expected results")
+		}
+	}
+}
+
+// BenchmarkSearchPageWithDeletions measures SearchPage performance when many payloads are deleted.
+// This tests the overhead of skipping missing payloads during hydration.
+func BenchmarkSearchPageWithDeletions(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 5K entities using BatchIndex
+	entities := make([]SearchEntity, 0, 5000)
+	for i := 0; i < 5000; i++ {
+		entities = append(entities, SearchEntity{
+			ID: fmt.Sprintf("entity-%d", i),
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	// Delete 50% of entities to create gaps
+	b.Logf("Deleting 50%% of entities")
+	for i := 0; i < 5000; i += 2 {
+		if err := overlay.Delete(ctx, fmt.Sprintf("entity-%d", i)); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 100})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Models) == 0 {
+			b.Fatal("expected results")
+		}
+	}
+}
+
+// BenchmarkSearchPageMemory measures memory allocations and collections during pagination.
+// This uses -benchmem flag to track allocations and GC behavior.
+func BenchmarkSearchPageMemory(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 2K entities with 50 fields each for complex pagination scenarios
+	entities := make([]SearchEntity, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		attrs := make([]Attribute, 0, 50)
+		for j := 0; j < 50; j++ {
+			attrs = append(attrs, Attribute{
+				Field: fmt.Sprintf("field_%d", j),
+				Value: fmt.Sprintf("value_%d_golang_%d", j, i%10),
+			})
+		}
+		entities = append(entities, SearchEntity{
+			ID:         fmt.Sprintf("entity-%d", i),
+			Attributes: attrs,
+			Payload:    []byte(fmt.Sprintf(`{"id": %d, "data": "x"}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 50})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(page.Models) == 0 {
+			b.Fatal("expected results")
+		}
+	}
+}
+
+// BenchmarkSearchPageMultiPageTraversal measures the cost of paginating through a full result set.
+// This simulates a client clicking through pages to the end.
+func BenchmarkSearchPageMultiPageTraversal(b *testing.B) {
+	overlay := setupBenchOverlay(b)
+	ctx := context.Background()
+
+	// Index 2K entities
+	entities := make([]SearchEntity, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		entities = append(entities, SearchEntity{
+			ID: fmt.Sprintf("entity-%d", i),
+			Attributes: []Attribute{
+				{Field: "title", Value: "golang"},
+			},
+			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
+		})
+	}
+	if err := overlay.BatchIndex(ctx, entities); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cursor := ""
+		pageCount := 0
+		for {
+			page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 100, Cursor: cursor})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(page.Models) == 0 {
+				break
+			}
+			pageCount++
+			if page.Next == "" {
+				break
+			}
+			cursor = page.Next
+		}
+		if pageCount == 0 {
+			b.Fatal("expected pages")
+		}
+	}
+}
