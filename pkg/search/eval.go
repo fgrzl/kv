@@ -204,15 +204,14 @@ func (o *overlay) intersectWithBloomFilter(
 		return result
 	}
 
-	// Build bloom filters for each AND token and result set
-	resultFilter := buildBloomFilterFromEntityMap(result)
+	// Build bloom filters for each AND token
 	filters := make(map[string]*BloomFilter, len(andTokens))
 	for _, token := range andTokens {
 		filters[token] = buildBloomFilterFromEntityMap(tokenResults[token])
 	}
 
-	// Find candidates that pass all bloom filters
-	candidates := bloomFilterIntersectCandidates(result, filters, resultFilter)
+	// Find candidates that pass all bloom filters (removed resultFilter as it's redundant)
+	candidates := bloomFilterIntersectCandidates(result, filters)
 
 	// Only materialize entities that passed bloom filters
 	return materializeIntersectionWithBloom(result, andTokens, tokenResults, candidates)
@@ -314,18 +313,13 @@ func buildBloomFilterFromEntityMap(m map[string]map[string]struct{}) *BloomFilte
 func bloomFilterIntersectCandidates(
 	result map[string]map[string]struct{},
 	filters map[string]*BloomFilter,
-	resultFilter *BloomFilter,
 ) []string {
 	// Collect candidates that pass all bloom filters
 	candidates := make([]string, 0, len(result)/10) // Expect intersection to be smaller
 
 	for entityID := range result {
-		// Must be in result bloom filter
-		if !resultFilter.Contains(entityID) {
-			continue
-		}
-
 		// Must be in all AND token filters
+		// (All entityIDs are in result by construction, so no need to check resultFilter)
 		passedAllFilters := true
 		for _, filter := range filters {
 			if !filter.Contains(entityID) {

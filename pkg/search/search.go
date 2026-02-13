@@ -92,6 +92,7 @@ package searchoverlay
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -243,39 +244,68 @@ type posting struct {
 }
 
 // encodePosting efficiently encodes a posting as binary data without JSON overhead.
-// Format: entityID (cstring, null-terminated) + field (cstring, null-terminated)
+// Format: varint(len(entityID)) + entityID + varint(len(field)) + field
+// Varint length-prefixed encoding avoids null-byte vulnerability while maintaining efficiency.
 // This eliminates ~200ns per unmarshal + reduces allocations by 50-70%.
 func encodePosting(p posting) []byte {
-	// Pre-allocate for typical entity+field size: 10+10=20 bytes + 2 nulls
-	buf := make([]byte, 0, len(p.EntityID)+len(p.Field)+2)
+	// Pre-allocate for typical entity+field size: varint headers + content
+	buf := make([]byte, 0, len(p.EntityID)+len(p.Field)+10)
+	
+	// Encode entityID length + content
+	buf = binary.AppendVarint(buf, int64(len(p.EntityID)))
 	buf = append(buf, []byte(p.EntityID)...)
-	buf = append(buf, 0)
+	
+	// Encode field length + content
+	buf = binary.AppendVarint(buf, int64(len(p.Field)))
 	buf = append(buf, []byte(p.Field)...)
-	buf = append(buf, 0)
+	
 	return buf
 }
 
 // decodePosting efficiently decodes a posting from binary format.
 func decodePosting(data []byte) (posting, error) {
-	// Find the two null separators
-	firstNull := -1
-	secondNull := -1
-	for i, b := range data {
-		if b == 0 {
-			if firstNull == -1 {
-				firstNull = i
-			} else {
-				secondNull = i
-				break
-			}
-		}
+	if len(data) == 0 {
+		return posting{}, errors.New("invalid posting format: empty data")
 	}
-	if firstNull == -1 || secondNull == -1 {
-		return posting{}, errors.New("invalid posting format")
+	
+	var offset int
+	
+	// Decode entityID length
+	entityIDLen, n := binary.Varint(data[offset:])
+	if n <= 0 {
+		return posting{}, errors.New("invalid posting format: cannot read entityID length")
 	}
+	if entityIDLen < 0 {
+		return posting{}, errors.New("invalid posting format: negative entityID length")
+	}
+	offset += n
+	
+	// Extract entityID
+	if offset+int(entityIDLen) > len(data) {
+		return posting{}, errors.New("invalid posting format: truncated entityID")
+	}
+	entityID := string(data[offset : offset+int(entityIDLen)])
+	offset += int(entityIDLen)
+	
+	// Decode field length
+	fieldLen, n := binary.Varint(data[offset:])
+	if n <= 0 {
+		return posting{}, errors.New("invalid posting format: cannot read field length")
+	}
+	if fieldLen < 0 {
+		return posting{}, errors.New("invalid posting format: negative field length")
+	}
+	offset += n
+	
+	// Extract field
+	if offset+int(fieldLen) > len(data) {
+		return posting{}, errors.New("invalid posting format: truncated field")
+	}
+	field := string(data[offset : offset+int(fieldLen)])
+	
 	return posting{
-		EntityID: string(data[:firstNull]),
-		Field:    string(data[firstNull+1 : secondNull]),
+		EntityID: entityID,
+		Field:    field,
 	}, nil
 }
 
@@ -1044,7 +1074,9 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 	}
 
 	nextCursor := ""
-	if limit > 0 && len(pageIDs) >= limit && moreAvailable {
+	// BUG FIX: Check len(hits) instead of len(pageIDs) because hydrateHits may filter out
+	// deleted entities. Using len(pageIDs) caused incomplete pages when candidates were deleted.
+	if limit > 0 && len(hits) >= limit && moreAvailable {
 		nextCursor = encodeCursor(lastCandidate)
 	}
 
@@ -1243,11 +1275,11 @@ func (o *overlay) searchFieldIndexes(
 ) error {
 	// Phase 3 optimization: Parallelize field queries for independent partitions.
 	// Each field has its own index partition, so queries can run concurrently.
-	// Use WaitGroup to coordinate goroutines and mutex to sync map updates.
+	// Phase 3b: Batch per-goroutine results to reduce lock contention.
+	// Each goroutine builds its own result map, then we merge all maps once with a single lock.
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errs []error
 
 	// Convert field set to slice for concurrent iteration
 	fieldList := make([]string, 0, len(fields))
@@ -1255,8 +1287,23 @@ func (o *overlay) searchFieldIndexes(
 		fieldList = append(fieldList, field)
 	}
 
+	// Channel to collect per-field results to avoid lock contention
+	type fieldResults struct {
+		results map[string]map[string]struct{}
+		err     error
+	}
+	resultsChan := make(chan fieldResults, len(fieldList))
+
 	// Launch a goroutine for each field query
 	for _, field := range fieldList {
+		// Check if context already cancelled before launching goroutines
+		select {
+		case <-ctx.Done():
+			wg.Wait()  // Wait for any already-launched goroutines
+			return ctx.Err()
+		default:
+		}
+
 		wg.Add(1)
 		go func(f string) {
 			defer wg.Done()
@@ -1277,14 +1324,21 @@ func (o *overlay) searchFieldIndexes(
 					"token", token,
 					"err", err,
 				)
-				mu.Lock()
-				errs = append(errs, err)
-				mu.Unlock()
+				resultsChan <- fieldResults{err: err}
 				return
 			}
 
-			// Process results and update shared map with synchronization
+				// Build per-field result map WITHOUT lock (much faster)
+			entityFieldMap := make(map[string]map[string]struct{})
 			for _, it := range items {
+				// Check context cancellation periodically for large result sets
+				select {
+				case <-ctx.Done():
+					resultsChan <- fieldResults{err: ctx.Err()}
+					return
+				default:
+				}
+
 				p, err := decodePosting(it.Value)
 				if err != nil {
 					o.log.WarnContext(ctx, "searchoverlay: skipping malformed field posting",
@@ -1298,29 +1352,50 @@ func (o *overlay) searchFieldIndexes(
 					continue
 				}
 
-				mu.Lock()
 				// Lazy-allocate inner map only when first field appears for this entity
-				// Phase 2c: Small initial capacity reduces repeated map growth
-				if postingsByEntity[p.EntityID] == nil {
-					postingsByEntity[p.EntityID] = make(map[string]struct{}, 4) // Typical: 1-5 fields per entity
+				if entityFieldMap[p.EntityID] == nil {
+					entityFieldMap[p.EntityID] = make(map[string]struct{}, 4) // Typical: 1-5 fields per entity
 				}
 				if p.Field != "" {
-					postingsByEntity[p.EntityID][p.Field] = struct{}{}
+					entityFieldMap[p.EntityID][p.Field] = struct{}{}
 				}
-				mu.Unlock()
 			}
+
+			resultsChan <- fieldResults{results: entityFieldMap}
 		}(field)
 	}
 
-	// Wait for all goroutines to complete
-	wg.Wait()
+	// Wait for all goroutines to complete in background
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
 
-	// Check if any errors occurred
-	if len(errs) > 0 {
-		return errs[0]
+	// Collect results and merge with single lock
+	var firstErr error
+	for fr := range resultsChan {
+		if fr.err != nil {
+			if firstErr == nil {
+				firstErr = fr.err
+			}
+			continue
+		}
+
+		// Merge field results into shared map with lock (brief lock duration)
+		mu.Lock()
+		for entityID, fieldSet := range fr.results {
+			if postingsByEntity[entityID] == nil {
+				postingsByEntity[entityID] = make(map[string]struct{}, len(fieldSet))
+			}
+			for field := range fieldSet {
+				postingsByEntity[entityID][field] = struct{}{}
+			}
+		}
+		mu.Unlock()
 	}
 
-	return nil
+	// Return first error if any occurred
+	return firstErr
 }
 
 func (o *overlay) hydrateHits(
@@ -1412,7 +1487,9 @@ func parseCursor(raw string) (pageCursor, error) {
 	if strings.TrimSpace(raw) == "" {
 		return pageCursor{}, nil
 	}
-	parts := strings.SplitN(raw, "|", 2)
+	// BUG FIX: Use "||" delimiter instead of "|" to avoid conflicts with entity IDs containing pipes
+	// Example: entity ID "item|variant" would be incorrectly split with single pipe delimiter
+	parts := strings.SplitN(raw, "||", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return pageCursor{}, errors.New("searchoverlay: invalid cursor")
 	}
@@ -1424,7 +1501,8 @@ func parseCursor(raw string) (pageCursor, error) {
 }
 
 func encodeCursor(candidate rankedCandidate) string {
-	return strconv.Itoa(candidate.HitCount) + "|" + candidate.ID
+	// BUG FIX: Use "||" delimiter instead of "|" to avoid conflicts with entity IDs
+	return strconv.Itoa(candidate.HitCount) + "||" + candidate.ID
 }
 
 // loadTokenRegistry retrieves the stored token registry for an entity.

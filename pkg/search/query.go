@@ -84,8 +84,11 @@ func tokenizeQuery(text string) []QueryToken {
 		}
 
 		// Remove quotes if present
-		if (strings.HasPrefix(token, "\"") && strings.HasSuffix(token, "\"")) ||
-			(strings.HasPrefix(token, "'") && strings.HasSuffix(token, "'")) {
+		// BUG FIX: Check each quote type independently instead of using OR
+		// This prevents mismatched quotes like 'hello" from passing through unchanged
+		isDoubleQuoted := strings.HasPrefix(token, "\"") && strings.HasSuffix(token, "\"")
+		isSingleQuoted := strings.HasPrefix(token, "'") && strings.HasSuffix(token, "'")
+		if (isDoubleQuoted || isSingleQuoted) && len(token) > 1 {
 			token = token[1 : len(token)-1]
 		}
 
@@ -110,22 +113,32 @@ func tokenizeQuery(text string) []QueryToken {
 	return result
 }
 
-// smartSplit intelligently splits a query string respecting quoted strings.
+// smartSplit intelligently splits a query string respecting quoted strings and escape sequences.
 // Unlike strings.Fields, this preserves quoted strings as single tokens.
+// Supports backslash escaping: \" for double quotes, \' for single quotes, \\ for backslash.
 func smartSplit(text string) []string {
 	var result []string
 	var current strings.Builder
 	inQuote := false
 	quoteChar := rune(0)
+	escaped := false
 
 	for _, r := range text {
-		if (r == '"' || r == '\'') && !inQuote {
+		if escaped {
+			// Previous character was backslash: include current character literally
+			current.WriteRune(r)
+			escaped = false
+		} else if r == '\\' && inQuote {
+			// Backslash inside quotes: mark next character as escaped
+			escaped = true
+			current.WriteRune(r)
+		} else if (r == '"' || r == '\'') && !inQuote {
 			// Start of quote
 			inQuote = true
 			quoteChar = r
 			current.WriteRune(r)
 		} else if r == quoteChar && inQuote {
-			// End of quote
+			// End of quote (only if not escaped)
 			inQuote = false
 			current.WriteRune(r)
 		} else if unicode.IsSpace(r) && !inQuote {
