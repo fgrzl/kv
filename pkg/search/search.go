@@ -537,42 +537,55 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 		return nil, nil
 	}
 
-	toks := tokenize(text)
-	if len(toks) == 0 {
+	// Phase 5b: Parse query for multi-token support (boolean operators, NOT, etc.)
+	query := ParseQuery(text)
+	if len(query.Tokens) == 0 {
 		return nil, nil
 	}
-	// For now we use the first token only; more complex token logic can be added later.
-	token := toks[0]
-	firstLetter := partitionKeyForToken(token)
 
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 0 // let backend decide; we will still guard on hydration
 	}
 
-	// Collect postings from either value index or field+value index.
-	postingsByEntity := make(map[string]map[string]struct{}) // entityID -> matched field set
+	// Normalize field list (dedupe, lower/trim)
+	fieldSet := make(map[string]struct{})
+	for _, f := range q.Fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		fieldSet[f] = struct{}{}
+	}
 
-	if len(q.Fields) == 0 {
-		if err := o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return nil, err
+	// Collect postings from either value index or field+value index.
+	var postingsByEntity map[string]map[string]struct{}
+	var err error
+
+	// Phase 5b optimization: For single-token queries without NOT, use optimized single-token path
+	if query.IsSingleToken() && len(query.Tokens) == 1 && !query.Tokens[0].IsNot {
+		// Optimized path for common case: single keyword
+		token := query.Tokens[0].Text
+		firstLetter := partitionKeyForToken(token)
+		postingsByEntity = make(map[string]map[string]struct{})
+
+		if len(fieldSet) == 0 {
+			if err = o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
+			}
+		} else {
+			if err = o.searchFieldIndexes(ctx, token, firstLetter, limit, fieldSet, postingsByEntity); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return nil, err
+			}
 		}
 	} else {
-		// Normalize field list (dedupe, lower/trim)
-		fieldSet := make(map[string]struct{})
-		for _, f := range q.Fields {
-			f = strings.TrimSpace(f)
-			if f == "" {
-				continue
-			}
-			fieldSet[f] = struct{}{}
-		}
-		if len(fieldSet) == 0 {
-			return nil, nil
-		}
-		if err := o.searchFieldIndexes(ctx, token, firstLetter, limit, fieldSet, postingsByEntity); err != nil {
+		// Multi-token or special case: use boolean evaluation
+		postingsByEntity, err = o.evaluateMultiToken(ctx, query, fieldSet, limit)
+		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return nil, err
@@ -627,13 +640,11 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 		return polymorphic.Page[SearchHit]{}, nil
 	}
 
-	toks := tokenize(text)
-	if len(toks) == 0 {
+	// Phase 5b: Parse query for multi-token support (boolean operators, NOT, etc.)
+	query := ParseQuery(text)
+	if len(query.Tokens) == 0 {
 		return polymorphic.Page[SearchHit]{}, nil
 	}
-	// For now we use the first token only; more complex token logic can be added later.
-	token := toks[0]
-	firstLetter := partitionKeyForToken(token)
 
 	limit := q.Limit
 	if limit <= 0 {
@@ -643,27 +654,45 @@ func (o *overlay) SearchPage(ctx context.Context, q PageQuery) (polymorphic.Page
 	// Phase 4 optimization: Apply dynamic backend scan limits based on page size.
 	// This reduces unnecessary scanning while maintaining ranking correctness.
 	effectiveScanLimit := computeEffectiveScanLimit(q.Limit)
-	postingsByEntity := make(map[string]map[string]struct{})
 
-	if len(q.Fields) == 0 {
-		if err := o.searchValueIndex(ctx, token, firstLetter, effectiveScanLimit, postingsByEntity); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return polymorphic.Page[SearchHit]{}, err
+	// Normalize field list (dedupe, lower/trim)
+	fieldSet := make(map[string]struct{})
+	for _, f := range q.Fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		fieldSet[f] = struct{}{}
+	}
+
+	// Collect postings from either value index or field+value index.
+	var postingsByEntity map[string]map[string]struct{}
+	var err error
+
+	// Phase 5b optimization: For single-token queries without NOT, use optimized single-token path
+	if query.IsSingleToken() && len(query.Tokens) == 1 && !query.Tokens[0].IsNot {
+		// Optimized path for common case: single keyword
+		token := query.Tokens[0].Text
+		firstLetter := partitionKeyForToken(token)
+		postingsByEntity = make(map[string]map[string]struct{})
+
+		if len(fieldSet) == 0 {
+			if err = o.searchValueIndex(ctx, token, firstLetter, effectiveScanLimit, postingsByEntity); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return polymorphic.Page[SearchHit]{}, err
+			}
+		} else {
+			if err = o.searchFieldIndexes(ctx, token, firstLetter, effectiveScanLimit, fieldSet, postingsByEntity); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return polymorphic.Page[SearchHit]{}, err
+			}
 		}
 	} else {
-		fieldSet := make(map[string]struct{})
-		for _, f := range q.Fields {
-			f = strings.TrimSpace(f)
-			if f == "" {
-				continue
-			}
-			fieldSet[f] = struct{}{}
-		}
-		if len(fieldSet) == 0 {
-			return polymorphic.Page[SearchHit]{}, nil
-		}
-		if err := o.searchFieldIndexes(ctx, token, firstLetter, effectiveScanLimit, fieldSet, postingsByEntity); err != nil {
+		// Multi-token or special case: use boolean evaluation
+		postingsByEntity, err = o.evaluateMultiToken(ctx, query, fieldSet, effectiveScanLimit)
+		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return polymorphic.Page[SearchHit]{}, err
