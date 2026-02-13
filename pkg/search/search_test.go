@@ -905,10 +905,10 @@ func TestShouldUpdateEntityAttributesWhenReindexed(t *testing.T) {
 	assert.Len(t, results, 1)
 	assert.Equal(t, "doc1", results[0].ID)
 
-	// Old content should still match (index entries remain)
+	// Old content should NOT match (stale postings were deleted)
 	results, err = overlay.Search(ctx, Query{Text: "golang"})
 	require.NoError(t, err)
-	assert.Len(t, results, 1)
+	assert.Len(t, results, 0, "stale token 'golang' should not be found after re-indexing")
 }
 
 func TestShouldPreserveEntityPayloadInSearchResults(t *testing.T) {
@@ -1134,5 +1134,5 @@ func TestShouldIndexAndSearchEntityWithManyAttributes(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
-	assert.Len(t, results[0].MatchedFields, 3) // title, tags, description
+	assert.Len(t, results[0].MatchedFields, 2) // title, tags (not description which only has "go")
 }
