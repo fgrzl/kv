@@ -250,15 +250,15 @@ type posting struct {
 func encodePosting(p posting) []byte {
 	// Pre-allocate for typical entity+field size: varint headers + content
 	buf := make([]byte, 0, len(p.EntityID)+len(p.Field)+10)
-	
+
 	// Encode entityID length + content
 	buf = binary.AppendVarint(buf, int64(len(p.EntityID)))
 	buf = append(buf, []byte(p.EntityID)...)
-	
+
 	// Encode field length + content
 	buf = binary.AppendVarint(buf, int64(len(p.Field)))
 	buf = append(buf, []byte(p.Field)...)
-	
+
 	return buf
 }
 
@@ -267,9 +267,9 @@ func decodePosting(data []byte) (posting, error) {
 	if len(data) == 0 {
 		return posting{}, errors.New("invalid posting format: empty data")
 	}
-	
+
 	var offset int
-	
+
 	// Decode entityID length
 	entityIDLen, n := binary.Varint(data[offset:])
 	if n <= 0 {
@@ -279,14 +279,14 @@ func decodePosting(data []byte) (posting, error) {
 		return posting{}, errors.New("invalid posting format: negative entityID length")
 	}
 	offset += n
-	
+
 	// Extract entityID
 	if offset+int(entityIDLen) > len(data) {
 		return posting{}, errors.New("invalid posting format: truncated entityID")
 	}
 	entityID := string(data[offset : offset+int(entityIDLen)])
 	offset += int(entityIDLen)
-	
+
 	// Decode field length
 	fieldLen, n := binary.Varint(data[offset:])
 	if n <= 0 {
@@ -296,25 +296,17 @@ func decodePosting(data []byte) (posting, error) {
 		return posting{}, errors.New("invalid posting format: negative field length")
 	}
 	offset += n
-	
+
 	// Extract field
 	if offset+int(fieldLen) > len(data) {
 		return posting{}, errors.New("invalid posting format: truncated field")
 	}
 	field := string(data[offset : offset+int(fieldLen)])
-	
+
 	return posting{
 		EntityID: entityID,
 		Field:    field,
 	}, nil
-}
-
-// postingResult tracks hit count and matched fields for an entity during search.
-// Used to efficiently collect candidates and their rankings before pagination.
-type postingResult struct {
-	entityID string              // entity ID
-	fields   map[string]struct{} // matched fields (lazy-populated)
-	hitCount int                 // number of distinct fields that matched
 }
 
 // internal field registry entry.
@@ -482,7 +474,7 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 	}
 
 	// 5) Update token registry
-	if err := o.saveTokenRegistry(ctx, e.ID, newReg, batchesByPartition); err != nil {
+	if err := o.saveTokenRegistry(e.ID, newReg, batchesByPartition); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -709,7 +701,7 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 		}
 
 		// Update token registry
-		if err := o.saveTokenRegistry(ctx, e.ID, newReg, batchesByPartition); err != nil {
+		if err := o.saveTokenRegistry(e.ID, newReg, batchesByPartition); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -804,7 +796,7 @@ func (o *overlay) Delete(ctx context.Context, id string) error {
 	})
 
 	// Delete token registry
-	o.deleteTokenRegistry(ctx, id, batchesByPartition)
+	o.deleteTokenRegistry(id, batchesByPartition)
 
 	// Execute each batch grouped by partition key
 	for _, batch := range batchesByPartition {
@@ -1299,7 +1291,7 @@ func (o *overlay) searchFieldIndexes(
 		// Check if context already cancelled before launching goroutines
 		select {
 		case <-ctx.Done():
-			wg.Wait()  // Wait for any already-launched goroutines
+			wg.Wait() // Wait for any already-launched goroutines
 			return ctx.Err()
 		default:
 		}
@@ -1328,7 +1320,7 @@ func (o *overlay) searchFieldIndexes(
 				return
 			}
 
-				// Build per-field result map WITHOUT lock (much faster)
+			// Build per-field result map WITHOUT lock (much faster)
 			entityFieldMap := make(map[string]map[string]struct{})
 			for _, it := range items {
 				// Check context cancellation periodically for large result sets
@@ -1529,7 +1521,7 @@ func (o *overlay) loadTokenRegistry(ctx context.Context, entityID string) (token
 }
 
 // saveTokenRegistry stores the token registry for an entity.
-func (o *overlay) saveTokenRegistry(ctx context.Context, entityID string, reg tokenRegistry, batch map[string][]*kv.BatchItem) error {
+func (o *overlay) saveTokenRegistry(entityID string, reg tokenRegistry, batch map[string][]*kv.BatchItem) error {
 	raw, err := json.Marshal(reg)
 	if err != nil {
 		return err
@@ -1546,7 +1538,7 @@ func (o *overlay) saveTokenRegistry(ctx context.Context, entityID string, reg to
 }
 
 // deleteTokenRegistry removes the token registry for an entity.
-func (o *overlay) deleteTokenRegistry(ctx context.Context, entityID string, batch map[string][]*kv.BatchItem) {
+func (o *overlay) deleteTokenRegistry(entityID string, batch map[string][]*kv.BatchItem) {
 	tokenPartKey := o.tokenPartition()
 	pk := lexkey.NewPrimaryKey(tokenPartKey, lexkey.Encode(entityID))
 	batch[string(tokenPartKey)] = append(batch[string(tokenPartKey)], &kv.BatchItem{
