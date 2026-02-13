@@ -841,8 +841,13 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 	var err error
 
 	// Phase 5b optimization: For single-token queries without NOT, use optimized single-token path
-	if query.IsSingleToken() && len(query.Tokens) == 1 && !query.Tokens[0].IsNot {
-		// Optimized path for common case: single keyword
+	// However, if the single token contains spaces (from a quoted phrase like "golang programming"),
+	// treat it as implicit AND and use the multi-token path
+	isSingleWordToken := query.IsSingleToken() && len(query.Tokens) == 1 && !query.Tokens[0].IsNot
+	tokenHasSpaces := isSingleWordToken && strings.Contains(query.Tokens[0].Text, " ")
+
+	if isSingleWordToken && !tokenHasSpaces {
+		// Optimized path for common case: single keyword without spaces
 		token := query.Tokens[0].Text
 		firstLetter := partitionKeyForToken(token)
 		postingsByEntity = make(map[string]map[string]struct{})
@@ -861,7 +866,7 @@ func (o *overlay) Search(ctx context.Context, q Query) ([]SearchHit, error) {
 			}
 		}
 	} else {
-		// Multi-token or special case: use boolean evaluation
+		// Multi-token, quoted phrase with spaces, or special case: use boolean evaluation
 		postingsByEntity, err = o.evaluateMultiToken(ctx, query, fieldSet, limit)
 		if err != nil {
 			span.RecordError(err)

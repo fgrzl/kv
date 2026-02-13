@@ -2,6 +2,7 @@ package searchoverlay
 
 import (
 	"context"
+	"strings"
 )
 
 // EvaluationMode determines how multi-token queries are evaluated.
@@ -23,23 +24,71 @@ func (o *overlay) evaluateMultiToken(ctx context.Context, query QueryExpr, field
 
 	// Evaluate each token and collect results
 	for _, tok := range query.Tokens {
-		postingsByEntity := make(map[string]map[string]struct{})
-
 		token := tok.Text
-		firstLetter := partitionKeyForToken(token)
 
-		// Query index for this token with specified fields or all fields
-		if len(fields) == 0 {
-			if err := o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
-				return nil, err
+		// Handle multi-word tokens (from quoted phrases like "golang programming")
+		// Tokenize into individual words and combine with AND
+		words := strings.Fields(token)
+		if len(words) > 1 {
+			// Multi-word token: search for each word and combine results with AND
+			var combinedResults map[string]map[string]struct{}
+			for i, word := range words {
+				postingsByEntity := make(map[string]map[string]struct{})
+				firstLetter := partitionKeyForToken(word)
+
+				// Query index for this word with specified fields or all fields
+				if len(fields) == 0 {
+					if err := o.searchValueIndex(ctx, word, firstLetter, limit, postingsByEntity); err != nil {
+						return nil, err
+					}
+				} else {
+					if err := o.searchFieldIndexes(ctx, word, firstLetter, limit, fields, postingsByEntity); err != nil {
+						return nil, err
+					}
+				}
+
+				// Combine with previous word results using AND
+				if i == 0 {
+					combinedResults = postingsByEntity
+				} else {
+					// AND operation: keep only entities that have all words
+					newCombined := make(map[string]map[string]struct{})
+					for entityID, fieldsMap := range combinedResults {
+						if postingsByEntity[entityID] != nil {
+							// Merge field sets
+							newFields := make(map[string]struct{})
+							for field := range fieldsMap {
+								newFields[field] = struct{}{}
+							}
+							for field := range postingsByEntity[entityID] {
+								newFields[field] = struct{}{}
+							}
+							newCombined[entityID] = newFields
+						}
+					}
+					combinedResults = newCombined
+				}
 			}
+			// Store the combined results under the original token text
+			tokenResults[token] = combinedResults
 		} else {
-			if err := o.searchFieldIndexes(ctx, token, firstLetter, limit, fields, postingsByEntity); err != nil {
-				return nil, err
-			}
-		}
+			// Single-word token: search normally
+			postingsByEntity := make(map[string]map[string]struct{})
+			firstLetter := partitionKeyForToken(token)
 
-		tokenResults[token] = postingsByEntity
+			// Query index for this token with specified fields or all fields
+			if len(fields) == 0 {
+				if err := o.searchValueIndex(ctx, token, firstLetter, limit, postingsByEntity); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := o.searchFieldIndexes(ctx, token, firstLetter, limit, fields, postingsByEntity); err != nil {
+					return nil, err
+				}
+			}
+
+			tokenResults[token] = postingsByEntity
+		}
 	}
 
 	// Evaluate boolean expression based on query structure
