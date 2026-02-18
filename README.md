@@ -7,13 +7,16 @@ A simple and flexible **key-value store abstraction** for Go that provides a uni
 
 The KV interface allows you to seamlessly switch between storage backends including **Azure Tables**, **Pebble DB**, **Redis**, and **Merkle Trees** without changing your application code.
 
+**Contents:** [Architecture](#architecture) · [Features](#features) · [Installation](#installation) · [Quick Start](#quick-start) · [Development Setup](#development-setup) · [API Reference](#api-reference) · [Contributing](#contributing) · [License](#license) · [Related Projects](#related-projects) · [Support](#support)
+
 ---
 
-## 🏗️ **Architecture**
+## Architecture
 
-The library follows an interface-based design pattern with a core `KV` interface that abstracts common key-value operations. Each backend implementation provides specific optimizations while maintaining the same consistent API.
+The library follows an interface-based design pattern with a core `KV` interface that abstracts common key-value operations. **The interface is the lowest common denominator of all supported backends:** only behavior that every backend can provide is part of the contract. Callers should not rely on backend-specific guarantees (e.g. stronger atomicity, ordering, or performance). Individual backends may implement operations more efficiently, but portable code must assume only what the interface guarantees.
 
 **Supported Backends:**
+
 - **Azure Tables** - Cloud-native NoSQL storage
 - **Pebble** - High-performance embedded key-value store (RocksDB successor)
 - **Redis** - In-memory data structure store
@@ -21,46 +24,48 @@ The library follows an interface-based design pattern with a core `KV` interface
 
 ---
 
-## 🚀 **Features**
+## Features
 
-- 🔑 **CRUD Operations** - `Get`, `Put`, `Insert`, `Remove` with full type safety
-- ⚡ **Batch Operations** - Efficient bulk writes with deduplication support
-- 🔍 **Advanced Queries** - Range queries, prefix searches, and custom operators
-- 📊 **Query Operators** - `Equal`, `GreaterThan`, `Between`, `StartsWith`, and more
-- 🔄 **Enumeration** - Memory-efficient iteration over large datasets
-- 🎯 **Pluggable Backends** - Easy switching between storage systems
-- 🧪 **Test-Friendly** - Built-in test utilities and Docker setup
-- 📈 **Performance** - Optimized for high-throughput scenarios
-- 📊 **Observability** - Built-in OpenTelemetry tracing and metrics for monitoring
+- **CRUD Operations** — `Get`, `Put`, `Insert`, `Remove` with full type safety
+- **Batch Operations** — Efficient bulk writes with deduplication support
+- **Advanced Queries** — Range queries, prefix searches, and custom operators
+- **Query Operators** — `Equal`, `GreaterThan`, `Between`, `StartsWith`, and more
+- **Enumeration** — Memory-efficient iteration over large datasets
+- **Pluggable Backends** — Easy switching between storage systems
+- **Test-Friendly** — Built-in test utilities and Docker setup
+- **Performance** — Optimized for high-throughput scenarios
+- **Observability** — Built-in OpenTelemetry tracing and metrics for monitoring
 
 ---
 
-## ⚡ **Performance**
+## Performance
 
 The library is designed with performance in mind, ensuring that overlay abstractions (Graph, Merkle, Timeseries) add minimal overhead compared to direct KV operations.
 
 **Benchmark Results (on Intel i9-12900HK):**
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| KV Put | ~323µs | Base operation |
-| KV Get | ~494ns | Fast retrieval |
-| KV Batch | ~329µs | Efficient bulk writes |
-| Graph AddNode | ~328µs | Optimized with pre-allocation |
-| Graph BFS | ~19.8µs | Optimized traversal with pre-allocated data structures |
-| Merkle Build (100 leaves) | ~663µs | Optimized with pre-allocation and efficient batching |
-| Merkle Build (1000 leaves) | ~773µs | Scales well for larger trees |
-| Timeseries Append | ~339µs | Slight overhead acceptable |
-| Timeseries QueryRange | ~102µs | Fast range queries |
+| Operation                  | Time    | Notes                                                  |
+| -------------------------- | ------- | ------------------------------------------------------ |
+| KV Put                     | ~323µs  | Base operation                                         |
+| KV Get                     | ~494ns  | Fast retrieval                                         |
+| KV Batch                   | ~329µs  | Efficient bulk writes                                  |
+| Graph AddNode              | ~328µs  | Optimized with pre-allocation                          |
+| Graph BFS                  | ~19.8µs | Optimized traversal with pre-allocated data structures |
+| Merkle Build (100 leaves)  | ~663µs  | Optimized with pre-allocation and efficient batching   |
+| Merkle Build (1000 leaves) | ~773µs  | Scales well for larger trees                           |
+| Timeseries Append          | ~339µs  | Slight overhead acceptable                             |
+| Timeseries QueryRange      | ~102µs  | Fast range queries                                     |
 
 Overlays maintain high performance while providing rich functionality, with no unnecessary abstraction penalties.
 
 **Graph Optimizations:**
+
 - Pre-allocated slices and maps for BFS traversal
 - Optimized batch operations with capacity hints
 - Memory-efficient data structures for large graphs
 
 **Merkle Tree Optimizations:**
+
 - Pre-allocated slices for reduced memory allocations
 - Efficient batching for storage operations
 - Optimized hash computation with SHA256 reuse
@@ -68,7 +73,7 @@ Overlays maintain high performance while providing rich functionality, with no u
 
 ---
 
-## 📊 **Observability**
+## Observability
 
 The KV library includes comprehensive **OpenTelemetry instrumentation** for tracing and metrics collection. All core operations and overlay abstractions are automatically instrumented.
 
@@ -86,19 +91,16 @@ The KV library includes comprehensive **OpenTelemetry instrumentation** for trac
 
 ### Usage
 
+Wrap any KV store with `NewInstrumentedKV` to get tracing and metrics. Configure OpenTelemetry with an exporter of your choice (e.g. OTLP); see [OpenTelemetry Go documentation](https://opentelemetry.io/docs/languages/go/) for current setup.
+
 ```go
 import (
     "github.com/fgrzl/kv"
-    "go.opentelemetry.io/otel/sdk/trace"
-    "go.opentelemetry.io/otel/exporters/jaeger"
+    "github.com/fgrzl/kv/pkg/storage/pebble"
 )
 
-// Initialize OpenTelemetry (example with Jaeger)
-exp, _ := jaeger.New(jaeger.WithCollectorEndpoint())
-tp := trace.NewTracerProvider(trace.WithBatcher(exp))
-otel.SetTracerProvider(tp)
-
-// Use instrumented KV store
+// Create backend and wrap with instrumentation
+pebbleStore, _ := pebble.NewPebbleStore("./data")
 store := kv.NewInstrumentedKV(pebbleStore, "pebble")
 ```
 
@@ -113,82 +115,22 @@ store := kv.NewInstrumentedKV(pebbleStore, "pebble")
 
 ---
 
-## 📦 **Installation**
+## Installation
 
 ```bash
 go get github.com/fgrzl/kv
 ```
 
 **Requirements:**
-- Go 1.24.0 or later
+
+- Go 1.25 or later
 - Docker (for running tests with backend services)
 
----
-
-## ⚡ **Dead Simple Setup**
-
-For the quickest possible setup with sensible defaults, use the `quickstart` package:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-
-    "github.com/fgrzl/kv/pkg/quickstart"
-    kvstore "github.com/fgrzl/kv"
-    "github.com/fgrzl/lexkey"
-)
-
-func main() {
-    // Create a KV store with Pebble backend (temporary database)
-    kv, err := quickstart.NewPebbleKV("")
-    if err != nil {
-        panic(err)
-    }
-    defer kv.Close()
-
-    // Create a graph database
-    graph, err := quickstart.NewGraph("myapp", "")
-    if err != nil {
-        panic(err)
-    }
-
-    // Create a time series database
-    ts, err := quickstart.NewTimeSeries("metrics", "")
-    if err != nil {
-        panic(err)
-    }
-
-    // Create a Merkle tree
-    tree, err := quickstart.NewMerkleTree("")
-    if err != nil {
-        panic(err)
-    }
-
-    // Ready to use! All backends are pre-configured with optimized settings.
-
-    // Example: Use the KV store
-    pk := lexkey.NewPrimaryKey(lexkey.Encode("users"), lexkey.Encode("john"))
-    err = kv.Put(context.Background(), &kvstore.Item{PK: pk, Value: []byte("John Doe")})
-    // ... use kv, graph, ts, tree as needed
-}
-```
-
-**Available Quick Start Functions:**
-- `NewPebbleKV(path)` - Embedded key-value store (empty path = temp DB)
-- `NewRedisKV(addr)` - Redis-backed store (empty addr = localhost:6379)  
-- `NewAzureKV(table)` - Azure Tables store (uses env vars for auth)
-- `NewGraph(name, pebblePath)` - Complete graph setup
-- `NewTimeSeries(name, pebblePath)` - Complete time series setup
-- `NewMerkleTree(pebblePath)` - Complete Merkle tree setup
-
-All functions include OpenTelemetry instrumentation by default.
+The project follows semantic versioning. The `KV` interface and its core types are stable; we do not break backward compatibility in minor or patch releases.
 
 ---
 
-## 🚀 **Quick Start**
+## Quick Start
 
 ### Basic Usage
 
@@ -201,7 +143,7 @@ import (
     "log"
 
     "github.com/fgrzl/kv"
-    "github.com/fgrzl/kv/pebble"
+    "github.com/fgrzl/kv/pkg/storage/pebble"
     "github.com/fgrzl/lexkey"
 )
 
@@ -224,7 +166,7 @@ func main() {
         PK:    pk,
         Value: []byte(`{"name": "John Doe", "email": "john@example.com"}`),
     }
-    
+
     err = store.Put(context.Background(), item)
     if err != nil {
         log.Fatal(err)
@@ -235,7 +177,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    
+
     if retrieved != nil {
         fmt.Printf("Retrieved: %s\n", string(retrieved.Value))
     }
@@ -248,7 +190,7 @@ func main() {
 
 ```go
 import (
-    "github.com/fgrzl/kv/azure"
+    "github.com/fgrzl/kv/pkg/storage/azure"
 )
 
 credential, err := azure.NewSharedKeyCredential(accountName, accountKey)
@@ -267,7 +209,7 @@ store, err := azure.NewAzureStore(
 
 ```go
 import (
-    "github.com/fgrzl/kv/redis"
+    "github.com/fgrzl/kv/pkg/storage/redis"
 )
 
 store, err := redis.NewRedisStore(
@@ -281,7 +223,7 @@ store, err := redis.NewRedisStore(
 
 ```go
 import (
-    "github.com/fgrzl/kv/pebble"
+    "github.com/fgrzl/kv/pkg/storage/pebble"
 )
 
 store, err := pebble.NewPebbleStore(
@@ -327,7 +269,7 @@ defer enumerator.Close()
 for enumerator.Next() {
     item := enumerator.Current()
     // Process item
-    fmt.Printf("Key: %s, Value: %s\n", 
+    fmt.Printf("Key: %s, Value: %s\n",
         string(item.PK.RowKey), string(item.Value))
 }
 
@@ -338,13 +280,14 @@ if enumerator.Error() != nil {
 
 ---
 
-## 🛠️ **Development Setup**
+## Development Setup
 
 ### Prerequisites
 
-1. **Install Go 1.24.0+**
+1. **Install Go 1.25+**
+
    ```bash
-   go version  # Should show 1.24.0 or later
+   go version  # Should show 1.25 or later
    ```
 
 2. **Install Docker** (for running test infrastructure)
@@ -372,8 +315,8 @@ go build ./...
 The test suite requires backend services to be running. We provide a Docker Compose setup for this:
 
 ```bash
-# Start test infrastructure (Azure Storage Emulator + Redis)
-docker compose -f test/compose.yml up -d
+# Start test infrastructure (fazure + Redis)
+docker compose up -d
 
 # Run all tests
 go test ./... -v
@@ -385,31 +328,32 @@ go test ./... -v -coverprofile=coverage.out
 go tool cover -html=coverage.out
 
 # Stop test infrastructure
-docker compose -f test/compose.yml down
+docker compose down
 ```
 
 ### Test Infrastructure
 
-The `test/compose.yml` file sets up:
-- **Azurite** (Azure Storage Emulator) on port 10002
+The root `compose.yml` sets up:
+
+- **fazure** (Azure Table emulator) — Table service on port 10002
 - **Redis** on port 6379
 
 ### Running Specific Backend Tests
 
 ```bash
 # Test only Pebble backend
-go test ./pebble -v
+go test ./pkg/storage/pebble -v
 
-# Test only Redis backend  
-go test ./redis -v
+# Test only Redis backend
+go test ./pkg/storage/redis -v
 
 # Test only Azure backend
-go test ./azure -v
+go test ./pkg/storage/azure -v
 ```
 
 ---
 
-## 📖 **API Reference**
+## API Reference
 
 ### Core Interface
 
@@ -437,7 +381,7 @@ type KV interface {
 - `Scan` - Retrieve all items in range
 - `Equal` - Exact match
 - `GreaterThan` / `GreaterThanOrEqual` - Range queries
-- `LessThan` / `LessThanOrEqual` - Range queries  
+- `LessThan` / `LessThanOrEqual` - Range queries
 - `Between` - Range between two keys
 - `StartsWith` - Prefix matching
 
@@ -451,60 +395,34 @@ type Item struct {
 
 type BatchItem struct {
     Op    BatchOp            // Put or Delete
-    PK    lexkey.PrimaryKey  
+    PK    lexkey.PrimaryKey
     Value []byte
 }
 ```
 
 ---
 
-## 🤝 **Contributing**
+## Contributing
 
-We welcome contributions! Please follow these guidelines:
-
-### Development Workflow
-
-1. **Fork and clone** the repository
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Make your changes** with appropriate tests
-4. **Run the test suite**: `go test ./...`
-5. **Run the linter**: `go vet ./...`
-6. **Commit changes**: `git commit -m 'Add amazing feature'`
-7. **Push to branch**: `git push origin feature/amazing-feature`
-8. **Open a Pull Request**
-
-### Code Standards
-
-- Follow standard Go conventions (`go fmt`, `go vet`)
-- Add tests for new functionality
-- Update documentation for API changes
-- Ensure all backends are supported for new features
-- Maintain backward compatibility
-
-### Testing Requirements
-
-- All tests must pass across all supported backends
-- Add integration tests for new features
-- Include benchmarks for performance-critical changes
-- Test with the provided Docker infrastructure
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, code standards, and how to run tests.
 
 ---
 
-## 📄 **License**
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🔗 **Related Projects**
+## Related Projects
 
 - [lexkey](https://github.com/fgrzl/lexkey) - Lexicographic key encoding library
 - [enumerators](https://github.com/fgrzl/enumerators) - Generic enumeration utilities
 
 ---
 
-## 📞 **Support**
+## Support
 
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/fgrzl/kv/issues)
-- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/fgrzl/kv/discussions)
-- 📖 **Documentation**: This README and inline code documentation
+- **Bug Reports**: [GitHub Issues](https://github.com/fgrzl/kv/issues)
+- **Feature Requests**: [GitHub Discussions](https://github.com/fgrzl/kv/discussions)
+- **Documentation**: This README and inline code documentation
