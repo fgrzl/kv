@@ -1,3 +1,7 @@
+// Package kv provides a key-value store abstraction whose interface is the
+// lowest common denominator of all supported backends. Only behavior that
+// every backend can provide is part of the contract; callers must not rely
+// on backend-specific guarantees (e.g. stronger atomicity or ordering).
 package kv
 
 import (
