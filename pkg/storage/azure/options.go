@@ -1,9 +1,9 @@
+// Package azure provides an Azure Table Storage backend for kv.KV using a
+// lightweight HTTP client and optional credentials (shared key or managed identity).
 package azure
 
 import (
 	"net/http"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 )
 
 // TableProviderOptions holds configuration options for Azure Storage Tables.
@@ -11,9 +11,9 @@ type TableProviderOptions struct {
 	Prefix                    string
 	Table                     string
 	Endpoint                  string
-	UseDefaultAzureCredential bool
-	SharedKeyCredential       *aztables.SharedKeyCredential
-	HTTPClient                *http.Client // Custom HTTP client for connection pooling
+	SharedKeyCredential       *SharedKeyCredential
+	ManagedIdentityCredential *ManagedIdentityCredential
+	HTTPClient                *http.Client
 }
 
 // StoreOption configures a TableProviderOptions.
@@ -40,23 +40,21 @@ func WithEndpoint(endpoint string) StoreOption {
 	}
 }
 
-// WithDefaultCredential configures the store to use Azure Default Credential.
-func WithDefaultCredential() StoreOption {
-	return func(o *TableProviderOptions) {
-		o.UseDefaultAzureCredential = true
-	}
-}
-
 // WithSharedKey configures the store to use a shared key credential.
-func WithSharedKey(cred *aztables.SharedKeyCredential) StoreOption {
+func WithSharedKey(cred *SharedKeyCredential) StoreOption {
 	return func(o *TableProviderOptions) {
 		o.SharedKeyCredential = cred
 	}
 }
 
+// WithManagedIdentity configures the store to use Azure Managed Identity.
+func WithManagedIdentity(cred *ManagedIdentityCredential) StoreOption {
+	return func(o *TableProviderOptions) {
+		o.ManagedIdentityCredential = cred
+	}
+}
+
 // WithHTTPClient sets a custom HTTP client for connection pooling and keep-alive.
-// This is important for performance in containerized environments where the default
-// HTTP client may create new connections for each request.
 // If not set, a default HTTP client with optimized connection pooling will be used.
 func WithHTTPClient(client *http.Client) StoreOption {
 	return func(o *TableProviderOptions) {
