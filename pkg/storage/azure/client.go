@@ -2,72 +2,85 @@ package azure
 
 import (
 	"fmt"
-	"net"
-	"net/http"
-	"time"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
+	"net/url"
+	"strings"
 )
 
-func NewSharedKeyCredential(accountName, accountKey string) (*aztables.SharedKeyCredential, error) {
-	return aztables.NewSharedKeyCredential(accountName, accountKey)
-}
-
-// defaultHTTPClient returns an HTTP client with optimized settings for Azure Tables.
-// Uses connection pooling, keep-alive, and reasonable timeouts to avoid the overhead
-// of establishing a new TCP connection for each request.
-func defaultHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   100, // Important for single-host scenarios (Azure/Azurite)
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-		Timeout: 60 * time.Second,
+// getClient builds an HTTPTableClient from store options.
+// If TableProviderOptions.HTTPClient is set, it is used instead of the default transport.
+func getClient(options *TableProviderOptions) (*HTTPTableClient, error) {
+	if options == nil {
+		return nil, fmt.Errorf("options required")
 	}
-}
+	if options.Endpoint == "" {
+		return nil, fmt.Errorf("endpoint is required")
+	}
 
-func getClient(options *TableProviderOptions) (*aztables.Client, error) {
 	name := sanitizeTableName(fmt.Sprintf("%s-%s", options.Prefix, options.Table))
-	url := fmt.Sprintf("%s/%s", options.Endpoint, name)
+	allowInsecure := strings.HasPrefix(options.Endpoint, "http://")
 
-	// Use provided HTTP client or create default with connection pooling
-	httpClient := options.HTTPClient
-	if httpClient == nil {
-		httpClient = defaultHTTPClient()
-	}
-
-	clientOptions := aztables.ClientOptions{}
-	clientOptions.Transport = httpClient
+	var client *HTTPTableClient
+	var err error
 
 	switch {
-	case options.UseDefaultAzureCredential:
-		cred, err := azidentity.NewDefaultAzureCredential(nil)
-		if err != nil {
-			return nil, err
-		}
-		return aztables.NewClient(url, cred, &clientOptions)
-
 	case options.SharedKeyCredential != nil:
-		if options.SharedKeyCredential.AccountName() == "devstoreaccount1" {
-			clientOptions.InsecureAllowCredentialWithHTTP = true
+		client, err = NewHTTPTableClient(
+			options.SharedKeyCredential.AccountName,
+			options.SharedKeyCredential.AccountKey,
+			name,
+			allowInsecure,
+			options.Endpoint,
+		)
+
+	case options.ManagedIdentityCredential != nil:
+		accountName, parseErr := parseAccountName(options.Endpoint)
+		if parseErr != nil {
+			return nil, fmt.Errorf("cannot derive account name from endpoint: %w", parseErr)
 		}
-		return aztables.NewClientWithSharedKey(url, options.SharedKeyCredential, &clientOptions)
+		client, err = NewHTTPTableClientWithManagedIdentity(
+			accountName,
+			options.ManagedIdentityCredential,
+			name,
+			allowInsecure,
+			options.Endpoint,
+		)
 
 	default:
-		return nil, fmt.Errorf("missing credential")
+		return nil, fmt.Errorf("missing credential: provide SharedKeyCredential or ManagedIdentityCredential")
 	}
+
+	if err != nil {
+		return nil, err
+	}
+	if options.HTTPClient != nil {
+		client.httpClient = options.HTTPClient
+	}
+	return client, nil
 }
 
+// parseAccountName extracts the storage account name from an endpoint URL.
+// Supports both "https://<account>.table.core.windows.net" and custom endpoints
+// like "http://127.0.0.1:10002/<account>".
+func parseAccountName(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	// Standard Azure endpoint: account is the first subdomain
+	host := u.Hostname()
+	if parts := strings.SplitN(host, ".", 2); len(parts) == 2 && parts[1] != "" {
+		return parts[0], nil
+	}
+	// Azurite / custom endpoint: account is the first path segment
+	segments := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 2)
+	if len(segments) > 0 && segments[0] != "" {
+		return segments[0], nil
+	}
+	return "", fmt.Errorf("cannot determine account name from %q", endpoint)
+}
+
+// sanitizeTableName normalizes a table name to Azure Table Storage rules:
+// must start with a letter, contain only alphanumerics, length 3–63.
 func sanitizeTableName(name string) string {
 	if len(name) == 0 {
 		return "T00"

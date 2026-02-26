@@ -2,11 +2,8 @@ package azure
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
-	"github.com/Azure/azure-sdk-for-go/sdk/data/aztables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
@@ -14,7 +11,7 @@ import (
 
 type azureEnumerator struct {
 	ctx    context.Context
-	pager  *runtime.Pager[aztables.ListEntitiesResponse]
+	pager  *ListEntitiesPager
 	limit  int
 	total  int
 	buffer []*kv.Item
@@ -22,7 +19,9 @@ type azureEnumerator struct {
 	err    error
 }
 
-func AzureEnumerator(ctx context.Context, pager *runtime.Pager[aztables.ListEntitiesResponse], limit int) enumerators.Enumerator[*kv.Item] {
+// AzureEnumerator returns an enumerator that pages through list-entity results
+// and maps each entity to a kv.Item. limit caps the total number of items (0 = no cap).
+func AzureEnumerator(ctx context.Context, pager *ListEntitiesPager, limit int) enumerators.Enumerator[*kv.Item] {
 	return &azureEnumerator{
 		ctx:   ctx,
 		pager: pager,
@@ -37,25 +36,29 @@ func (e *azureEnumerator) MoveNext() bool {
 	if e.index < len(e.buffer) {
 		return true
 	}
-	for e.pager.More() {
-		resp, err := e.pager.NextPage(e.ctx)
+	for !e.pager.IsDone() {
+		entities, err := e.pager.FetchPage(e.ctx)
 		if err != nil {
 			e.err = fmt.Errorf("failed to fetch page: %w", err)
 			return false
 		}
 		e.buffer = e.buffer[:0]
-		for _, raw := range resp.Entities {
-			var entity Entity
-			if err := json.Unmarshal(raw, &entity); err != nil {
-				e.err = fmt.Errorf("failed to decode entity: %w", err)
+		for _, ent := range entities {
+			var pk, rk lexkey.LexKey
+			if err := pk.FromHexString(ent.PartitionKey); err != nil {
+				e.err = fmt.Errorf("failed to decode partition key: %w", err)
+				return false
+			}
+			if err := rk.FromHexString(ent.RowKey); err != nil {
+				e.err = fmt.Errorf("failed to decode row key: %w", err)
 				return false
 			}
 			e.buffer = append(e.buffer, &kv.Item{
 				PK: lexkey.PrimaryKey{
-					PartitionKey: entity.PartitionKey,
-					RowKey:       entity.RowKey,
+					PartitionKey: pk,
+					RowKey:       rk,
 				},
-				Value: entity.Value,
+				Value: ent.Value,
 			})
 		}
 		e.index = 0
