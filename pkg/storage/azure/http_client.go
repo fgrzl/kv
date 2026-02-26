@@ -689,12 +689,32 @@ type BatchOp struct {
 
 // SubmitBatch executes a mixed batch of InsertReplace (PUT) and Delete operations
 // in a single Azure Table Storage $batch request with one changeset.
+// All operations must target the same partition. For delete-only batches, individual
+// DeleteEntity calls are used to avoid Azurite/emulator issues with batch DELETEs.
 func (c *HTTPTableClient) SubmitBatch(ctx context.Context, ops []BatchOp) error {
 	if len(ops) == 0 {
 		return nil
 	}
 	if len(ops) > AzureBatchMaxEntities {
 		return fmt.Errorf("batch size %d exceeds maximum of %d entities", len(ops), AzureBatchMaxEntities)
+	}
+
+	// Azurite returns CommandsInBatchActOnDifferentPartitions for delete-only batches
+	// even when all keys share the same partition. Use individual deletes for delete-only.
+	allDelete := true
+	for _, op := range ops {
+		if op.Type != BatchDelete {
+			allDelete = false
+			break
+		}
+	}
+	if allDelete {
+		for _, op := range ops {
+			if err := c.DeleteEntity(ctx, op.PartitionKey, op.RowKey); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	batchID := fmt.Sprintf("batch_%d", time.Now().UnixNano())
