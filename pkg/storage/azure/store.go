@@ -10,21 +10,22 @@ import (
 	"strings"
 	"sync"
 
+	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
 
 // TableClient defines the operations used by the store against Azure Table Storage.
-// *HTTPTableClient implements this interface.
+// *client.HTTPTableClient implements this interface.
 type TableClient interface {
 	CreateTable(ctx context.Context) error
 	GetEntity(ctx context.Context, pk, rk string) ([]byte, error)
 	AddEntity(ctx context.Context, data []byte) error
 	UpsertEntity(ctx context.Context, data []byte, mode string) error
 	DeleteEntity(ctx context.Context, pk, rk string) error
-	NewListEntitiesPager(filter, selectCols string, top int32) *ListEntitiesPager
-	SubmitBatch(ctx context.Context, ops []BatchOp) error
+	NewListEntitiesPager(filter, selectCols string, top int32) *client.ListEntitiesPager
+	SubmitBatch(ctx context.Context, ops []client.BatchOp) error
 }
 
 type store struct {
@@ -131,7 +132,7 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	}
 	err = s.client.AddEntity(ctx, entityJSON)
 	if err != nil {
-		var azErr *AzureError
+		var azErr *client.AzureError
 		if errors.As(err, &azErr) && azErr.StatusCode == 409 {
 			return kv.ErrAlreadyExists
 		}
@@ -274,7 +275,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 }
 
 func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem) error {
-	var ops []BatchOp
+	var ops []client.BatchOp
 	for _, item := range items {
 		switch item.Op {
 		case kv.Put:
@@ -286,10 +287,10 @@ func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem)
 			if err != nil {
 				return fmt.Errorf("marshal failed: %w", err)
 			}
-			ops = append(ops, BatchOp{Type: BatchInsertReplace, Entity: raw})
+			ops = append(ops, client.BatchOp{Type: client.BatchInsertReplace, Entity: raw})
 		case kv.Delete:
-			ops = append(ops, BatchOp{
-				Type:         BatchDelete,
+			ops = append(ops, client.BatchOp{
+				Type:         client.BatchDelete,
 				PartitionKey: item.PK.PartitionKey.ToHexString(),
 				RowKey:       item.PK.RowKey.ToHexString(),
 			})
@@ -338,7 +339,7 @@ func normalizeLimit(limit int) int32 {
 }
 
 func isNotFound(err error) bool {
-	var azErr *AzureError
+	var azErr *client.AzureError
 	if errors.As(err, &azErr) && azErr.StatusCode == 404 {
 		return true
 	}

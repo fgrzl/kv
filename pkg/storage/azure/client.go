@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	client "github.com/fgrzl/azkit/tables"
 )
 
 // getClient builds an HTTPTableClient from store options.
 // If TableProviderOptions.HTTPClient is set, it is used instead of the default transport.
-func getClient(options *TableProviderOptions) (*HTTPTableClient, error) {
+func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 	if options == nil {
 		return nil, fmt.Errorf("options required")
 	}
@@ -19,12 +21,12 @@ func getClient(options *TableProviderOptions) (*HTTPTableClient, error) {
 	name := sanitizeTableName(fmt.Sprintf("%s-%s", options.Prefix, options.Table))
 	allowInsecure := strings.HasPrefix(options.Endpoint, "http://")
 
-	var client *HTTPTableClient
+	var cl *client.HTTPTableClient
 	var err error
 
 	switch {
 	case options.SharedKeyCredential != nil:
-		client, err = NewHTTPTableClient(
+		cl, err = client.NewHTTPTableClient(
 			options.SharedKeyCredential.AccountName,
 			options.SharedKeyCredential.AccountKey,
 			name,
@@ -37,7 +39,7 @@ func getClient(options *TableProviderOptions) (*HTTPTableClient, error) {
 		if parseErr != nil {
 			return nil, fmt.Errorf("cannot derive account name from endpoint: %w", parseErr)
 		}
-		client, err = NewHTTPTableClientWithManagedIdentity(
+		cl, err = client.NewHTTPTableClientWithManagedIdentity(
 			accountName,
 			options.ManagedIdentityCredential,
 			name,
@@ -53,9 +55,9 @@ func getClient(options *TableProviderOptions) (*HTTPTableClient, error) {
 		return nil, err
 	}
 	if options.HTTPClient != nil {
-		client.httpClient = options.HTTPClient
+		cl.SetHTTPClient(options.HTTPClient)
 	}
-	return client, nil
+	return cl, nil
 }
 
 // parseAccountName extracts the storage account name from an endpoint URL.

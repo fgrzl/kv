@@ -190,10 +190,11 @@ func main() {
 
 ```go
 import (
+    "github.com/fgrzl/azkit/credentials"
     "github.com/fgrzl/kv/pkg/storage/azure"
 )
 
-credential, err := azure.NewSharedKeyCredential(accountName, accountKey)
+credential, err := credentials.NewSharedKeyCredential(accountName, accountKey)
 if err != nil {
     log.Fatal(err)
 }

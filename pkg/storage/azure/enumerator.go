@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
@@ -11,7 +12,7 @@ import (
 
 type azureEnumerator struct {
 	ctx    context.Context
-	pager  *ListEntitiesPager
+	pager  *client.ListEntitiesPager
 	limit  int
 	total  int
 	buffer []*kv.Item
@@ -21,7 +22,7 @@ type azureEnumerator struct {
 
 // AzureEnumerator returns an enumerator that pages through list-entity results
 // and maps each entity to a kv.Item. limit caps the total number of items (0 = no cap).
-func AzureEnumerator(ctx context.Context, pager *ListEntitiesPager, limit int) enumerators.Enumerator[*kv.Item] {
+func AzureEnumerator(ctx context.Context, pager *client.ListEntitiesPager, limit int) enumerators.Enumerator[*kv.Item] {
 	return &azureEnumerator{
 		ctx:   ctx,
 		pager: pager,

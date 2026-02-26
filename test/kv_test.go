@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fgrzl/azkit/credentials"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
 	"github.com/fgrzl/kv/pkg/storage/azure"
@@ -46,7 +47,7 @@ func setup(t *testing.T, provider string) kv.KV {
 		accountKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
 		endpoint := "http://127.0.0.1:10002/devstoreaccount1"
 
-		credential, err := azure.NewSharedKeyCredential(accountName, accountKey)
+		credential, err := credentials.NewSharedKeyCredential(accountName, accountKey)
 		if err != nil {
 			panic(err)
 		}

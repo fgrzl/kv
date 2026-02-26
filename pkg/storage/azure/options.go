@@ -4,6 +4,8 @@ package azure
 
 import (
 	"net/http"
+
+	"github.com/fgrzl/azkit/credentials"
 )
 
 // TableProviderOptions holds configuration options for Azure Storage Tables.
@@ -11,8 +13,8 @@ type TableProviderOptions struct {
 	Prefix                    string
 	Table                     string
 	Endpoint                  string
-	SharedKeyCredential       *SharedKeyCredential
-	ManagedIdentityCredential *ManagedIdentityCredential
+	SharedKeyCredential       *credentials.SharedKeyCredential
+	ManagedIdentityCredential *credentials.ManagedIdentityCredential
 	HTTPClient                *http.Client
 }
 
@@ -41,14 +43,14 @@ func WithEndpoint(endpoint string) StoreOption {
 }
 
 // WithSharedKey configures the store to use a shared key credential.
-func WithSharedKey(cred *SharedKeyCredential) StoreOption {
+func WithSharedKey(cred *credentials.SharedKeyCredential) StoreOption {
 	return func(o *TableProviderOptions) {
 		o.SharedKeyCredential = cred
 	}
 }
 
 // WithManagedIdentity configures the store to use Azure Managed Identity.
-func WithManagedIdentity(cred *ManagedIdentityCredential) StoreOption {
+func WithManagedIdentity(cred *credentials.ManagedIdentityCredential) StoreOption {
 	return func(o *TableProviderOptions) {
 		o.ManagedIdentityCredential = cred
 	}

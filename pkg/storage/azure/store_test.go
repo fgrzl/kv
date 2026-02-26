@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +29,7 @@ func (m *mockTableClient) GetEntity(ctx context.Context, partitionKey, rowKey st
 	key := partitionKey + ":" + rowKey
 	value, ok := m.data[key]
 	if !ok {
-		return nil, &AzureError{StatusCode: 404, Code: "ResourceNotFound", Message: "entity not found"}
+		return nil, &client.AzureError{StatusCode: 404, Code: "ResourceNotFound", Message: "entity not found"}
 	}
 	return value, nil
 }
@@ -46,7 +47,7 @@ func (m *mockTableClient) AddEntity(ctx context.Context, entity []byte) error {
 	json.Unmarshal(entity, &e)
 	key := e["PartitionKey"].(string) + ":" + e["RowKey"].(string)
 	if _, exists := m.data[key]; exists {
-		return &AzureError{StatusCode: 409, Code: "EntityAlreadyExists", Message: "conflict"}
+		return &client.AzureError{StatusCode: 409, Code: "EntityAlreadyExists", Message: "conflict"}
 	}
 	m.data[key] = entity
 	return nil
@@ -58,11 +59,11 @@ func (m *mockTableClient) DeleteEntity(ctx context.Context, partitionKey, rowKey
 	return nil
 }
 
-func (m *mockTableClient) NewListEntitiesPager(filter, selectCols string, top int32) *ListEntitiesPager {
+func (m *mockTableClient) NewListEntitiesPager(filter, selectCols string, top int32) *client.ListEntitiesPager {
 	panic("NewListEntitiesPager not implemented in mock")
 }
 
-func (m *mockTableClient) SubmitBatch(ctx context.Context, ops []BatchOp) error {
+func (m *mockTableClient) SubmitBatch(ctx context.Context, ops []client.BatchOp) error {
 	panic("SubmitBatch not implemented in mock")
 }
 
