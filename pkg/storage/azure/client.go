@@ -2,6 +2,7 @@ package azure
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -17,9 +18,11 @@ func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 	if options.Endpoint == "" {
 		return nil, fmt.Errorf("endpoint is required")
 	}
+	// Avoid double slash when client appends "/Tables" (prevents InvalidUri from Azure)
+	endpoint := strings.TrimSuffix(options.Endpoint, "/")
 
 	name := sanitizeTableName(fmt.Sprintf("%s-%s", options.Prefix, options.Table))
-	allowInsecure := strings.HasPrefix(options.Endpoint, "http://")
+	allowInsecure := strings.HasPrefix(endpoint, "http://")
 
 	var cl *client.HTTPTableClient
 	var err error
@@ -31,11 +34,11 @@ func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 			options.SharedKeyCredential.AccountKey,
 			name,
 			allowInsecure,
-			options.Endpoint,
+			endpoint,
 		)
 
 	case options.ManagedIdentityCredential != nil:
-		accountName, parseErr := parseAccountName(options.Endpoint)
+		accountName, parseErr := parseAccountName(endpoint)
 		if parseErr != nil {
 			return nil, fmt.Errorf("cannot derive account name from endpoint: %w", parseErr)
 		}
@@ -44,7 +47,7 @@ func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 			options.ManagedIdentityCredential,
 			name,
 			allowInsecure,
-			options.Endpoint,
+			endpoint,
 		)
 
 	default:
@@ -57,6 +60,14 @@ func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 	if options.HTTPClient != nil {
 		cl.SetHTTPClient(options.HTTPClient)
 	}
+
+	slog.Info("azure table client configured",
+		"endpoint", cl.Endpoint(),
+		"account", cl.AccountName(),
+		"table", cl.TableName(),
+		"bearer_auth", cl.UseBearerToken(),
+	)
+
 	return cl, nil
 }
 
