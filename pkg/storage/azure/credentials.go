@@ -70,6 +70,9 @@ type imdsTokenResponse struct {
 // When IDENTITY_ENDPOINT and IDENTITY_HEADER are set (App Service / Container Apps), uses that endpoint;
 // otherwise falls back to IMDS (VMs / VMSS).
 func NewManagedIdentityCredential(clientID string) *ManagedIdentityCredential {
+	if clientID == "" {
+		clientID = os.Getenv("AZURE_CLIENT_ID")
+	}
 	cred := &ManagedIdentityCredential{
 		clientID:   clientID,
 		httpClient: &http.Client{Timeout: IMDSRequestTimeout},

@@ -459,7 +459,9 @@ func (c *HTTPTableClient) CreateTable(ctx context.Context) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	c.signRequest(req, "POST", data, "/Tables")
+	if err := c.signRequest(req, "POST", data, "/Tables"); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
@@ -534,7 +536,9 @@ func (c *HTTPTableClient) AddEntity(ctx context.Context, data []byte) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	c.signRequest(req, "POST", buf.Bytes(), fmt.Sprintf("/%s", c.tableName))
+	if err := c.signRequest(req, "POST", buf.Bytes(), fmt.Sprintf("/%s", c.tableName)); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
@@ -640,7 +644,9 @@ func (c *HTTPTableClient) AddEntityBatch(ctx context.Context, entities [][]byte)
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	c.signRequest(req, "POST", buf.Bytes(), "/$batch")
+	if err := c.signRequest(req, "POST", buf.Bytes(), "/$batch"); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", batchID))
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
@@ -795,7 +801,9 @@ func (c *HTTPTableClient) SubmitBatch(ctx context.Context, ops []BatchOp) error 
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	c.signRequest(req, "POST", buf.Bytes(), "/$batch")
+	if err := c.signRequest(req, "POST", buf.Bytes(), "/$batch"); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", batchID))
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
@@ -885,8 +893,10 @@ func (c *HTTPTableClient) UpsertEntity(ctx context.Context, data []byte, mode st
 		return err
 	}
 
-	c.signRequest(req, method, body, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
-		c.tableName, url.QueryEscape(e.PartitionKey), url.QueryEscape(e.RowKey)))
+	if err := c.signRequest(req, method, body, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
+		c.tableName, url.QueryEscape(e.PartitionKey), url.QueryEscape(e.RowKey))); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
@@ -931,8 +941,10 @@ func (c *HTTPTableClient) DeleteEntity(ctx context.Context, pk, rk string) error
 		return err
 	}
 
-	c.signRequest(req, "DELETE", nil, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
-		c.tableName, url.QueryEscape(pk), url.QueryEscape(rk)))
+	if err := c.signRequest(req, "DELETE", nil, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
+		c.tableName, url.QueryEscape(pk), url.QueryEscape(rk))); err != nil {
+		return err
+	}
 	req.Header.Set("If-Match", "*") // Delete regardless of etag
 
 	resp, err := c.retryableRequest(ctx, req, nil)
@@ -990,8 +1002,10 @@ func (c *HTTPTableClient) GetEntity(ctx context.Context, pk, rk string) ([]byte,
 		return nil, err
 	}
 
-	c.signRequest(req, "GET", nil, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
-		c.tableName, url.QueryEscape(pk), url.QueryEscape(rk)))
+	if err := c.signRequest(req, "GET", nil, fmt.Sprintf("/%s(PartitionKey='%s',RowKey='%s')",
+		c.tableName, url.QueryEscape(pk), url.QueryEscape(rk))); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
 	resp, err := c.retryableRequest(ctx, req, nil)
@@ -1104,7 +1118,9 @@ func (p *ListEntitiesPager) FetchPage(ctx context.Context) ([]entity, error) {
 		return nil, err
 	}
 
-	p.client.signRequest(req, "GET", nil, fmt.Sprintf("/%s", p.client.tableName))
+	if err := p.client.signRequest(req, "GET", nil, fmt.Sprintf("/%s", p.client.tableName)); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
 	resp, err := p.client.retryableRequest(ctx, req, nil)
@@ -1173,7 +1189,7 @@ func (p *ListEntitiesPager) Close() error {
 // CanonicalizedResource format (Table service / SharedKeyLite):
 //
 //	/<accountName>/<path>[?comp=<value>]
-func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte, resourcePath string) {
+func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte, resourcePath string) error {
 	// Set standard headers
 	req.Header.Set("x-ms-version", AzureAPIVersion)
 	date := time.Now().UTC().Format(http.TimeFormat)
@@ -1189,16 +1205,11 @@ func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte
 	if c.useBearerToken && c.managedCred != nil {
 		token, err := c.managedCred.GetToken(req.Context())
 		if err != nil {
-			// Issue #15: Log error clearly and set a sentinel header so failures are visible.
-			// This prevents silent auth failures where a request proceeds without credentials.
 			slog.Error("failed to acquire managed identity token",
 				"error", err,
 				"method", method,
 				"path", resourcePath)
-			// Set a sentinel header so any monitoring/debugging can detect auth failure
-			req.Header.Set("X-Auth-Failure", "token_acquisition_failed")
-			// Continue anyway - Azure will return 401, which is better than silently failing
-			return
+			return fmt.Errorf("managed identity token: %w", err)
 		}
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 
@@ -1216,12 +1227,12 @@ func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte
 			"token_prefix", tokenPrefix,
 			"account", c.accountName,
 		)
-		return
+		return nil
 	}
 
 	// SAS tokens do not require signing; the token is appended to the URL as a query parameter
 	if c.useSAS {
-		return
+		return nil
 	}
 
 	// Use SharedKeyLite authentication for Table service
@@ -1252,14 +1263,12 @@ func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte
 	// so this should never fail in normal operation.
 	decodedKey, err := base64.StdEncoding.DecodeString(c.accountKey)
 	if err != nil {
-		// This is a programming error (invalid key made it past factory validation)
-		slog.Error("FATAL: account key failed to decode despite factory validation",
+		slog.Error("account key failed to decode despite factory validation",
 			"error", err,
 			"method", method,
 			"path", resourcePath,
 			"account", c.accountName)
-		req.Header.Set("X-Auth-Failure", "key_decode_error")
-		return
+		return fmt.Errorf("shared key decode: %w", err)
 	}
 
 	h := hmac.New(sha256.New, decodedKey)
@@ -1269,6 +1278,7 @@ func (c *HTTPTableClient) signRequest(req *http.Request, method string, _ []byte
 	// Set Authorization header using SharedKeyLite scheme
 	authHeader := fmt.Sprintf("SharedKeyLite %s:%s", c.accountName, signature)
 	req.Header.Set("Authorization", authHeader)
+	return nil
 }
 
 // AuthDiagnostic contains the results of an auth diagnostic check
@@ -1348,7 +1358,10 @@ func (c *HTTPTableClient) DiagnoseAuth(ctx context.Context) *AuthDiagnostic {
 		return diag
 	}
 
-	c.signRequest(req, "GET", nil, "/Tables")
+	if err := c.signRequest(req, "GET", nil, "/Tables"); err != nil {
+		diag.ErrorMessage = err.Error()
+		return diag
+	}
 	req.Header.Set("Accept", "application/json;odata=nometadata")
 
 	resp, err := c.httpClient.Do(req)
