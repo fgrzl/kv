@@ -113,7 +113,6 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
 		slog.ErrorContext(ctx, "redis pipeline get failed", "err", err)
-		return nil, err
 	}
 
 	results := make([]*kv.Item, 0, len(keys))
@@ -124,7 +123,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 		}
 		if err != nil {
 			slog.ErrorContext(ctx, "redis get error", "index", i, "err", err)
-			return nil, err
+			continue
 		}
 		results = append(results, &kv.Item{PK: keys[i], Value: val})
 	}

@@ -1334,6 +1334,13 @@ func (o *overlay) searchFieldIndexes(
 		go func(f string) {
 			defer wg.Done()
 
+			select {
+			case <-ctx.Done():
+				resultsChan <- fieldResults{err: ctx.Err()}
+				return
+			default:
+			}
+
 			args := kv.QueryArgs{
 				PartitionKey: o.fieldPartition(f, firstLetter),
 				StartRowKey:  lexkey.Encode(token),
@@ -1595,7 +1602,11 @@ func (o *overlay) scoreCandidates(
 		}
 		score := 0.0
 		for _, token := range positiveTokens {
-			entityFields := tokenResults[token][id]
+			tokenMap := tokenResults[token]
+			if tokenMap == nil {
+				continue
+			}
+			entityFields := tokenMap[id]
 			if entityFields == nil {
 				continue
 			}
