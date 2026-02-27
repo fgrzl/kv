@@ -82,6 +82,7 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 			if errors.Is(err, pebble.ErrNotFound) {
 				continue
 			}
+			closer.Close()
 			return nil, err
 		}
 		results = append(results, &kv.Item{PK: pk, Value: append([]byte{}, value...)})
