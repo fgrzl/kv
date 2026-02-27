@@ -55,10 +55,10 @@ func (e *azureEnumerator) MoveNext() bool {
 				return false
 			}
 			e.buffer = append(e.buffer, &kv.Item{
-				PK: lexkey.PrimaryKey{
+				PK: pkFromStore(lexkey.PrimaryKey{
 					PartitionKey: pk,
 					RowKey:       rk,
-				},
+				}),
 				Value: ent.Value,
 			})
 		}

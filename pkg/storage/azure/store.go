@@ -78,7 +78,8 @@ func (s *store) createTableIfNotExists(ctx context.Context) error {
 }
 
 func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
-	resp, err := s.client.GetEntity(ctx, pk.PartitionKey.ToHexString(), pk.RowKey.ToHexString())
+	storedPK := pkToStore(pk)
+	resp, err := s.client.GetEntity(ctx, storedPK.PartitionKey.ToHexString(), storedPK.RowKey.ToHexString())
 	if err != nil {
 		if isNotFound(err) {
 			return nil, nil
@@ -126,7 +127,8 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 }
 
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
-	entityJSON, err := json.Marshal(Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey, Value: item.Value})
+	storedPK := pkToStore(item.PK)
+	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: item.Value})
 	if err != nil {
 		return err
 	}
@@ -143,7 +145,8 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 }
 
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
-	entityJSON, err := json.Marshal(Entity{PartitionKey: item.PK.PartitionKey, RowKey: item.PK.RowKey, Value: item.Value})
+	storedPK := pkToStore(item.PK)
+	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: item.Value})
 	if err != nil {
 		return err
 	}
@@ -155,7 +158,8 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 }
 
 func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
-	err := s.client.DeleteEntity(ctx, pk.PartitionKey.ToHexString(), pk.RowKey.ToHexString())
+	storedPK := pkToStore(pk)
+	err := s.client.DeleteEntity(ctx, storedPK.PartitionKey.ToHexString(), storedPK.RowKey.ToHexString())
 	if err != nil {
 		slog.ErrorContext(ctx, "delete failed", "pk", pk, "err", err)
 	}
@@ -277,11 +281,12 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem) error {
 	var ops []client.BatchOp
 	for _, item := range items {
+		storedPK := pkToStore(item.PK)
 		switch item.Op {
 		case kv.Put:
 			raw, err := json.Marshal(Entity{
-				PartitionKey: item.PK.PartitionKey,
-				RowKey:       item.PK.RowKey,
+				PartitionKey: storedPK.PartitionKey,
+				RowKey:       storedPK.RowKey,
 				Value:        item.Value,
 			})
 			if err != nil {
@@ -291,8 +296,8 @@ func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem)
 		case kv.Delete:
 			ops = append(ops, client.BatchOp{
 				Type:         client.BatchDelete,
-				PartitionKey: item.PK.PartitionKey.ToHexString(),
-				RowKey:       item.PK.RowKey.ToHexString(),
+				PartitionKey: storedPK.PartitionKey.ToHexString(),
+				RowKey:       storedPK.RowKey.ToHexString(),
 			})
 		default:
 			return kv.ErrInvalidBatchOperation
@@ -361,34 +366,36 @@ func escapeODataString(s string) string {
 
 func buildFilter(args kv.QueryArgs) (*string, error) {
 	pk := escapeODataString(args.PartitionKey.ToHexString())
+	startRK := rowKeyToStore(args.StartRowKey)
+	endRK := rowKeyToStore(args.EndRowKey)
 	switch args.Operator {
 	case kv.Scan:
 		return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
 	case kv.Equal:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, escapeODataString(args.StartRowKey.ToHexString()))), nil
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, escapeODataString(startRK.ToHexString()))), nil
 	case kv.GreaterThan:
-		startKey := escapeODataString(args.StartRowKey.ToHexString())
-		if args.StartRowKey.ToHexString() == "" {
+		startKey := escapeODataString(startRK.ToHexString())
+		if len(args.StartRowKey) == 0 {
 			return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
 		}
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey gt '%s'", pk, startKey)), nil
 	case kv.GreaterThanOrEqual:
-		startKey := escapeODataString(args.StartRowKey.ToHexString())
-		if args.StartRowKey.ToHexString() == "" {
+		startKey := escapeODataString(startRK.ToHexString())
+		if len(args.StartRowKey) == 0 {
 			return ptr(fmt.Sprintf("PartitionKey eq '%s'", pk)), nil
 		}
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, startKey)), nil
 	case kv.LessThan:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey lt '%s'", pk, escapeODataString(args.EndRowKey.ToHexString()))), nil
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey lt '%s'", pk, escapeODataString(endRK.ToHexString()))), nil
 	case kv.LessThanOrEqual:
-		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, escapeODataString(args.EndRowKey.ToHexString()))), nil
+		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, escapeODataString(endRK.ToHexString()))), nil
 	case kv.Between:
-		startKey := escapeODataString(args.StartRowKey.ToHexString())
-		endKey := escapeODataString(args.EndRowKey.ToHexString())
-		if args.StartRowKey.ToHexString() == "" {
+		startKey := escapeODataString(startRK.ToHexString())
+		endKey := escapeODataString(endRK.ToHexString())
+		if len(args.StartRowKey) == 0 {
 			return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey le '%s'", pk, endKey)), nil
 		}
-		if args.EndRowKey.ToHexString() == "" {
+		if len(args.EndRowKey) == 0 {
 			return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s'", pk, startKey)), nil
 		}
 		return ptr(fmt.Sprintf("PartitionKey eq '%s' and RowKey ge '%s' and RowKey le '%s'", pk, startKey, endKey)), nil
