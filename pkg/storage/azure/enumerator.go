@@ -80,6 +80,8 @@ func (e *azureEnumerator) Current() (*kv.Item, error) {
 	return item, nil
 }
 
-func (e *azureEnumerator) Dispose() {}
+func (e *azureEnumerator) Dispose() {
+	_ = e.pager.Close()
+}
 
 func (e *azureEnumerator) Err() error { return e.err }

@@ -101,7 +101,7 @@ func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 	return &kv.Item{PK: pk, Value: val}, nil
 }
 
-func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
+func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.BatchGetResult, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -113,19 +113,21 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
 		slog.ErrorContext(ctx, "redis pipeline get failed", "err", err)
+		return nil, err
 	}
 
-	results := make([]*kv.Item, 0, len(keys))
+	results := make([]kv.BatchGetResult, len(keys))
 	for i, cmd := range cmds {
 		val, err := cmd.Bytes()
 		if err == redis.Nil {
+			results[i] = kv.BatchGetResult{Item: nil, Found: false}
 			continue
 		}
 		if err != nil {
 			slog.ErrorContext(ctx, "redis get error", "index", i, "err", err)
-			continue
+			return nil, err
 		}
-		results = append(results, &kv.Item{PK: keys[i], Value: val})
+		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: keys[i], Value: val}, Found: true}
 	}
 	return results, nil
 }

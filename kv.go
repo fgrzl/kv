@@ -27,6 +27,14 @@ type BatchItem struct {
 	Value []byte
 }
 
+// BatchGetResult is a single result from GetBatch. GetBatch returns exactly one
+// result per requested key, in the same order as keys. Found is false when the
+// key does not exist; Item is nil in that case and non-nil when Found is true.
+type BatchGetResult struct {
+	Item  *Item
+	Found bool
+}
+
 // BatchOp defines the type of batch operation.
 type BatchOp int
 
@@ -103,7 +111,7 @@ func SortItems(items []*Item, direction SortDirection) {
 // KV defines the interface for a key-value store.
 type KV interface {
 	Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
-	GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
+	GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]BatchGetResult, error)
 	Insert(ctx context.Context, item *Item) error
 	Put(ctx context.Context, item *Item) error
 	Remove(ctx context.Context, pk lexkey.PrimaryKey) error

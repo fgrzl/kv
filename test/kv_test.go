@@ -570,17 +570,46 @@ func TestShouldGetBatchItems(t *testing.T) {
 			keys := []lexkey.PrimaryKey{sampleData[0].PK, sampleData[1].PK}
 
 			// Act
-			items, err := db.GetBatch(t.Context(), keys...)
+			results, err := db.GetBatch(t.Context(), keys...)
 
 			// Assert
 			assert.NoError(t, err)
-			assert.Len(t, items, 2)
-			values := make(map[string][]byte)
-			for _, item := range items {
-				values[string(item.PK.RowKey)] = item.Value
-			}
-			assert.Equal(t, sampleData[0].Value, values[string(sampleData[0].PK.RowKey)])
-			assert.Equal(t, sampleData[1].Value, values[string(sampleData[1].PK.RowKey)])
+			require.Len(t, results, 2)
+			assert.True(t, results[0].Found, "first key should be found")
+			assert.True(t, results[1].Found, "second key should be found")
+			require.NotNil(t, results[0].Item)
+			require.NotNil(t, results[1].Item)
+			assert.Equal(t, sampleData[0].Value, results[0].Item.Value)
+			assert.Equal(t, sampleData[1].Value, results[1].Item.Value)
+		})
+	}
+}
+
+func TestGetBatchMixedFoundAndMissingKeys(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			db := setup(t, provider)
+			// Request keys: first two exist (from sampleData), third does not exist
+			existing0 := sampleData[0].PK
+			existing1 := sampleData[1].PK
+			missingPK := lexkey.NewPrimaryKey(partitionKey, lexkey.Encode("nonexistent"))
+			keys := []lexkey.PrimaryKey{existing0, missingPK, existing1}
+
+			results, err := db.GetBatch(t.Context(), keys...)
+			require.NoError(t, err)
+			require.Len(t, results, 3, "result length must match request length")
+
+			// Order must match request order
+			assert.True(t, results[0].Found, "first key exists")
+			require.NotNil(t, results[0].Item)
+			assert.Equal(t, sampleData[0].Value, results[0].Item.Value)
+
+			assert.False(t, results[1].Found, "second key is missing")
+			assert.Nil(t, results[1].Item)
+
+			assert.True(t, results[2].Found, "third key exists")
+			require.NotNil(t, results[2].Item)
+			assert.Equal(t, sampleData[1].Value, results[2].Item.Value)
 		})
 	}
 }

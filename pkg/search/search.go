@@ -556,17 +556,16 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 		return err
 	}
 
-	// Build map of existing registries
+	// Build map of existing registries (results are in same order as tokenPKs / entityIDs)
 	oldRegistries := make(map[string]tokenRegistry)
-	for i, item := range tokenItems {
-		if item == nil {
+	for i, res := range tokenItems {
+		if !res.Found || res.Item == nil {
 			continue
 		}
 		var reg tokenRegistry
-		if err := json.Unmarshal(item.Value, &reg); err != nil {
+		if err := json.Unmarshal(res.Item.Value, &reg); err != nil {
 			continue
 		}
-		// Use entity ID from our request list
 		oldRegistries[entityIDs[i]] = reg
 	}
 
@@ -1458,11 +1457,11 @@ func (o *overlay) hydrateHits(
 
 	// Build a map from encoded RowKey to payload.
 	rowKeyToPayload := make(map[string][]byte, len(items))
-	for _, it := range items {
-		if it == nil {
+	for _, res := range items {
+		if !res.Found || res.Item == nil {
 			continue
 		}
-		rowKeyToPayload[string(it.PK.RowKey)] = it.Value
+		rowKeyToPayload[string(res.Item.PK.RowKey)] = res.Item.Value
 	}
 
 	hits := make([]SearchHit, 0, len(entityIDs))
@@ -1679,14 +1678,14 @@ func (o *overlay) loadDocLengths(ctx context.Context, entityIDs []string) (map[s
 	}
 
 	lengths := make(map[string]int, len(entityIDs))
-	for i, it := range items {
+	for i, res := range items {
 		id := entityIDs[i]
-		if it == nil {
+		if !res.Found || res.Item == nil {
 			lengths[id] = 0
 			continue
 		}
 		var reg tokenRegistry
-		if err := json.Unmarshal(it.Value, &reg); err != nil {
+		if err := json.Unmarshal(res.Item.Value, &reg); err != nil {
 			lengths[id] = 0
 			continue
 		}

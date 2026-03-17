@@ -95,35 +95,280 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 	return &kv.Item{PK: pk, Value: entity.Value}, nil
 }
 
-func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
+// getBatchMaxConcurrency limits concurrent partition requests to avoid throttling.
+const getBatchMaxConcurrency = 20
+
+// getBatchMaxRowKeysPerQuery caps predicates per OData filter.
+const getBatchMaxRowKeysPerQuery = 50
+
+// Keep filters comfortably below common Table Storage URL/query size limits.
+const getBatchMaxFilterLength = 900
+
+// getBatchSlot holds a request index and key for GetBatch partition grouping.
+type getBatchSlot struct {
+	idx int
+	pk  lexkey.PrimaryKey
+}
+
+func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.BatchGetResult, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	results := make([]kv.BatchGetResult, len(keys))
+
+	// Group keys by partition, preserving request index for ordered results.
+	byPartition := make(map[string][]getBatchSlot)
+	for i, pk := range keys {
+		stored := pkToStore(pk)
+		partHex := stored.PartitionKey.ToHexString()
+		byPartition[partHex] = append(byPartition[partHex], getBatchSlot{idx: i, pk: pk})
+	}
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	items := make([]*kv.Item, 0, len(keys))
+	sem := make(chan struct{}, getBatchMaxConcurrency)
 
-	for _, key := range keys {
+	for partHex, slots := range byPartition {
+		partHex, slots := partHex, slots
 		wg.Add(1)
-		go func(pk lexkey.PrimaryKey) {
+		go func() {
 			defer wg.Done()
-			item, err := s.Get(ctx, pk)
-			if err != nil {
-				slog.WarnContext(ctx, "get batch item failed", "pk", pk, "err", err)
+			if ctx.Err() != nil {
+				return
+			}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if err := s.getBatchPartition(ctx, partHex, slots, results); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
 				}
 				mu.Unlock()
-				return
+				for _, sl := range slots {
+					results[sl.idx] = kv.BatchGetResult{Item: nil, Found: false}
+				}
 			}
-			if item != nil {
-				mu.Lock()
-				items = append(items, item)
-				mu.Unlock()
-			}
-		}(key)
+		}()
 	}
 	wg.Wait()
-	return items, firstErr
+	return results, firstErr
+}
+
+// getBatchPartition fetches multiple keys in one partition and writes into results by index.
+// Uses one GetEntity for a single key, or one Query (OData filter) for multiple keys, to minimize round-trips.
+func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []getBatchSlot, results []kv.BatchGetResult) error {
+	if len(slots) == 0 {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	uniqueRKHexes, slotsByRK := groupBatchSlotsByStoredRowKey(slots)
+	if len(uniqueRKHexes) == 1 {
+		if err := s.getBatchPoint(ctx, slotsByRK[uniqueRKHexes[0]], results); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	queryChunks, pointGetRKHexes := splitBatchRowKeysForQuery(partHex, uniqueRKHexes)
+
+	var partWg sync.WaitGroup
+	var partMu sync.Mutex
+	var partErr error
+
+	// Run point-get fallbacks concurrently with query chunks.
+	for _, rkHex := range pointGetRKHexes {
+		rkHex := rkHex
+		partWg.Add(1)
+		go func() {
+			defer partWg.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			if err := s.getBatchPoint(ctx, slotsByRK[rkHex], results); err != nil {
+				partMu.Lock()
+				if partErr == nil {
+					partErr = err
+				}
+				partMu.Unlock()
+			}
+		}()
+	}
+
+	// Run query chunks concurrently.
+	for _, chunk := range queryChunks {
+		chunk := chunk
+		partWg.Add(1)
+		go func() {
+			defer partWg.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			filter := buildPartitionRowKeysFilter(partHex, chunk)
+			pager := s.client.NewListEntitiesPager(filter, "PartitionKey,RowKey,Value", int32(len(chunk)))
+			defer pager.Close()
+			fetchedValues := make(map[string][]byte, len(chunk))
+			for !pager.IsDone() {
+				entities, err := pager.FetchPage(ctx)
+				if err != nil {
+					partMu.Lock()
+					if partErr == nil {
+						partErr = fmt.Errorf("fetch page: %w", err)
+					}
+					partMu.Unlock()
+					return
+				}
+				for _, ent := range entities {
+					fetchedValues[ent.RowKey] = ent.Value
+				}
+			}
+			for _, rkHex := range chunk {
+				if value, ok := fetchedValues[rkHex]; ok {
+					setBatchResults(slotsByRK[rkHex], value, true, results)
+				} else {
+					setBatchResults(slotsByRK[rkHex], nil, false, results)
+				}
+			}
+		}()
+	}
+	partWg.Wait()
+	return partErr
+}
+
+func (s *store) getBatchPoint(ctx context.Context, slots []getBatchSlot, results []kv.BatchGetResult) error {
+	item, err := s.Get(ctx, slots[0].pk)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		setBatchResults(slots, nil, false, results)
+		return nil
+	}
+	setBatchResults(slots, item.Value, true, results)
+	return nil
+}
+
+func groupBatchSlotsByStoredRowKey(slots []getBatchSlot) ([]string, map[string][]getBatchSlot) {
+	uniqueRKHexes := make([]string, 0, len(slots))
+	slotsByRK := make(map[string][]getBatchSlot, len(slots))
+	for _, sl := range slots {
+		stored := pkToStore(sl.pk)
+		rkHex := stored.RowKey.ToHexString()
+		if _, exists := slotsByRK[rkHex]; !exists {
+			uniqueRKHexes = append(uniqueRKHexes, rkHex)
+		}
+		slotsByRK[rkHex] = append(slotsByRK[rkHex], sl)
+	}
+	return uniqueRKHexes, slotsByRK
+}
+
+func splitBatchRowKeysForQuery(partHex string, rowKeyHexes []string) ([][]string, []string) {
+	queryChunks := make([][]string, 0)
+	pointGetRKHexes := make([]string, 0)
+	chunk := make([]string, 0, min(len(rowKeyHexes), getBatchMaxRowKeysPerQuery))
+
+	pkEscaped := escapeODataString(partHex)
+	baseLen := len("PartitionKey eq '") + len(pkEscaped) + len("' and (") + len(")")
+	const rowKeyPrefixLen = len("RowKey eq '")
+	const rowKeySuffixLen = len("'")
+	const orLen = len(" or ")
+
+	// Pre-compute escaped length per row key for filter-length arithmetic.
+	rkEscapedLens := make([]int, len(rowKeyHexes))
+	for i, rk := range rowKeyHexes {
+		rkEscapedLens[i] = len(escapeODataString(rk))
+	}
+
+	filterLenForChunk := func(rkLens []int) int {
+		if len(rkLens) == 0 {
+			return baseLen - len(" and ()")
+		}
+		n := len(rkLens)
+		total := baseLen
+		for _, l := range rkLens {
+			total += rowKeyPrefixLen + l + rowKeySuffixLen
+		}
+		if n > 1 {
+			total += (n - 1) * orLen
+		}
+		return total
+	}
+
+	flushChunk := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		queryChunks = append(queryChunks, append([]string(nil), chunk...))
+		chunk = chunk[:0]
+	}
+
+	chunkLens := make([]int, 0, len(rowKeyHexes))
+	for i, rkHex := range rowKeyHexes {
+		candidateLens := append(chunkLens, rkEscapedLens[i])
+		candidateCount := len(chunk) + 1
+		filterLen := filterLenForChunk(candidateLens)
+		if candidateCount <= getBatchMaxRowKeysPerQuery && filterLen <= getBatchMaxFilterLength {
+			chunk = append(chunk, rkHex)
+			chunkLens = candidateLens
+			continue
+		}
+		flushChunk()
+		chunkLens = chunkLens[:0]
+
+		singleLen := filterLenForChunk([]int{rkEscapedLens[i]})
+		if singleLen > getBatchMaxFilterLength {
+			pointGetRKHexes = append(pointGetRKHexes, rkHex)
+			continue
+		}
+		chunk = append(chunk, rkHex)
+		chunkLens = append(chunkLens, rkEscapedLens[i])
+	}
+	flushChunk()
+	return queryChunks, pointGetRKHexes
+}
+
+func setBatchResults(slots []getBatchSlot, value []byte, found bool, results []kv.BatchGetResult) {
+	if !found {
+		for _, sl := range slots {
+			results[sl.idx] = kv.BatchGetResult{Item: nil, Found: false}
+		}
+		return
+	}
+	if len(slots) == 1 {
+		results[slots[0].idx] = kv.BatchGetResult{
+			Item:  &kv.Item{PK: slots[0].pk, Value: value},
+			Found: true,
+		}
+		return
+	}
+	for _, sl := range slots {
+		valueCopy := append([]byte(nil), value...)
+		results[sl.idx] = kv.BatchGetResult{
+			Item:  &kv.Item{PK: sl.pk, Value: valueCopy},
+			Found: true,
+		}
+	}
+}
+
+// buildPartitionRowKeysFilter returns an OData filter for partition + row key set.
+// Format: PartitionKey eq 'pk' and (RowKey eq 'r1' or RowKey eq 'r2' or ...).
+func buildPartitionRowKeysFilter(partitionKeyHex string, rowKeyHexes []string) string {
+	pk := escapeODataString(partitionKeyHex)
+	if len(rowKeyHexes) == 0 {
+		return fmt.Sprintf("PartitionKey eq '%s'", pk)
+	}
+	if len(rowKeyHexes) == 1 {
+		return fmt.Sprintf("PartitionKey eq '%s' and RowKey eq '%s'", pk, escapeODataString(rowKeyHexes[0]))
+	}
+	parts := make([]string, len(rowKeyHexes))
+	for i, rk := range rowKeyHexes {
+		parts[i] = "RowKey eq '" + escapeODataString(rk) + "'"
+	}
+	return fmt.Sprintf("PartitionKey eq '%s' and (%s)", pk, strings.Join(parts, " or "))
 }
 
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
