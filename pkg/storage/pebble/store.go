@@ -73,19 +73,23 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 	return &kv.Item{PK: pk, Value: append([]byte{}, value...)}, nil
 }
 
-// GetBatch returns a slice of items for the given primary keys.
-func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*kv.Item, error) {
-	results := make([]*kv.Item, 0, len(keys))
-	for _, pk := range keys {
+// GetBatch returns one result per requested key, in order, with Found set per key.
+func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.BatchGetResult, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	results := make([]kv.BatchGetResult, len(keys))
+	for i, pk := range keys {
 		value, closer, err := s.db.Get(pk.Encode())
 		if err != nil {
 			if errors.Is(err, pebble.ErrNotFound) {
+				results[i] = kv.BatchGetResult{Item: nil, Found: false}
 				continue
 			}
 			closer.Close()
 			return nil, err
 		}
-		results = append(results, &kv.Item{PK: pk, Value: append([]byte{}, value...)})
+		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: pk, Value: append([]byte{}, value...)}, Found: true}
 		closer.Close()
 	}
 	return results, nil

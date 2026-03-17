@@ -39,6 +39,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache: true
 
       - name: Ensure dependencies
         run: go mod tidy

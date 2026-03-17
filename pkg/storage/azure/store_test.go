@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	client "github.com/fgrzl/azkit/tables"
@@ -178,4 +179,80 @@ func TestShouldRemoveItemFromAzureStore(t *testing.T) {
 	retrieved, err := store.Get(context.Background(), pk)
 	assert.NoError(t, err)
 	assert.Nil(t, retrieved)
+}
+
+func TestGetBatchReturnsAllDuplicateKeys(t *testing.T) {
+	mockClient := newMockTableClient()
+	store, err := NewAzureStoreWithClient(mockClient)
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("row"))
+	value := []byte("test value")
+	entity := Entity{
+		PartitionKey: pk.PartitionKey,
+		RowKey:       pk.RowKey,
+		Value:        value,
+	}
+	entityJSON, _ := json.Marshal(entity)
+	mockClient.data[pk.PartitionKey.ToHexString()+":"+pk.RowKey.ToHexString()] = entityJSON
+
+	results, err := store.GetBatch(context.Background(), pk, pk)
+
+	assert.NoError(t, err)
+	assert.Len(t, results, 2)
+	for _, result := range results {
+		assert.True(t, result.Found)
+		assert.NotNil(t, result.Item)
+		assert.Equal(t, pk, result.Item.PK)
+		assert.Equal(t, value, result.Item.Value)
+	}
+}
+
+func TestGroupBatchSlotsByStoredRowKeyKeepsDuplicates(t *testing.T) {
+	pkA := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("a"))
+	pkB := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("b"))
+	storedA, storedB := pkToStore(pkA), pkToStore(pkB)
+	partHexA, rkHexA := storedA.PartitionKey.ToHexString(), storedA.RowKey.ToHexString()
+	rkHexB := storedB.RowKey.ToHexString()
+
+	uniqueRKHexes, slotsByRK := groupBatchSlotsByStoredRowKey([]getBatchSlot{
+		{idx: 0, pk: pkA, partHex: partHexA, rkHex: rkHexA},
+		{idx: 1, pk: pkA, partHex: partHexA, rkHex: rkHexA},
+		{idx: 2, pk: pkB, partHex: partHexA, rkHex: rkHexB},
+	})
+
+	assert.Len(t, uniqueRKHexes, 2)
+	assert.Len(t, slotsByRK[rkHexA], 2)
+	assert.Len(t, slotsByRK[rkHexB], 1)
+}
+
+func TestSplitBatchRowKeysForQueryRespectsFilterLength(t *testing.T) {
+	partHex := strings.Repeat("p", 32)
+	rowKeys := []string{
+		strings.Repeat("a", 360),
+		strings.Repeat("b", 360),
+		strings.Repeat("c", 360),
+	}
+
+	queryChunks, pointGets := splitBatchRowKeysForQuery(partHex, rowKeys)
+
+	assert.Empty(t, pointGets)
+	assert.NotEmpty(t, queryChunks)
+	totalKeys := 0
+	for _, chunk := range queryChunks {
+		totalKeys += len(chunk)
+		assert.LessOrEqual(t, len(chunk), getBatchMaxRowKeysPerQuery)
+		assert.LessOrEqual(t, len(buildPartitionRowKeysFilter(partHex, chunk)), getBatchMaxFilterLength)
+	}
+	assert.Equal(t, len(rowKeys), totalKeys)
+}
+
+func TestSplitBatchRowKeysForQueryFallsBackToPointGet(t *testing.T) {
+	partHex := strings.Repeat("p", 32)
+	veryLongRowKey := strings.Repeat("x", getBatchMaxFilterLength)
+
+	queryChunks, pointGets := splitBatchRowKeysForQuery(partHex, []string{veryLongRowKey})
+
+	assert.Empty(t, queryChunks)
+	assert.Equal(t, []string{veryLongRowKey}, pointGets)
 }

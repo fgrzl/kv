@@ -105,7 +105,7 @@ func (i *InstrumentedKV) Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, 
 	return item, nil
 }
 
-func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error) {
+func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]BatchGetResult, error) {
 	ctx, span := tracer.Start(ctx, "kv.GetBatch",
 		trace.WithAttributes(
 			attribute.String("store", i.store),
@@ -124,7 +124,7 @@ func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey
 			))
 	}()
 
-	items, err := i.kv.GetBatch(ctx, keys...)
+	results, err := i.kv.GetBatch(ctx, keys...)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -137,7 +137,7 @@ func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey
 		return nil, err
 	}
 
-	span.SetAttributes(attribute.Int("items_returned", len(items)))
+	span.SetAttributes(attribute.Int("items_returned", len(results)))
 	operationCount.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("store", i.store),
@@ -145,7 +145,7 @@ func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey
 			attribute.String("result", "success"),
 		))
 
-	return items, nil
+	return results, nil
 }
 
 func (i *InstrumentedKV) Insert(ctx context.Context, item *Item) error {
