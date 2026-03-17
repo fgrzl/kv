@@ -99,15 +99,31 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 const getBatchMaxConcurrency = 20
 
 // getBatchMaxRowKeysPerQuery caps predicates per OData filter.
-const getBatchMaxRowKeysPerQuery = 50
+const getBatchMaxRowKeysPerQuery = 100
 
-// Keep filters comfortably below common Table Storage URL/query size limits.
-const getBatchMaxFilterLength = 900
+// getBatchMaxFilterLength keeps filters below Table Storage URL/query limits (~32KB max; 2–3KB safe for all environments including Azurite).
+const getBatchMaxFilterLength = 2048
 
-// getBatchSlot holds a request index and key for GetBatch partition grouping.
+// getBatchSlot holds request index, key, and precomputed hex for GetBatch (avoids repeated pkToStore/ToHexString).
 type getBatchSlot struct {
-	idx int
-	pk  lexkey.PrimaryKey
+	idx     int
+	pk      lexkey.PrimaryKey
+	partHex string
+	rkHex   string
+}
+
+func fillSlotsNotFound(slots []getBatchSlot, results []kv.BatchGetResult) {
+	for _, sl := range slots {
+		results[sl.idx] = kv.BatchGetResult{Item: nil, Found: false}
+	}
+}
+
+func assignFirstErr(mu *sync.Mutex, dst *error, err error) {
+	mu.Lock()
+	if *dst == nil {
+		*dst = err
+	}
+	mu.Unlock()
 }
 
 func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.BatchGetResult, error) {
@@ -115,13 +131,12 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 		return nil, nil
 	}
 	results := make([]kv.BatchGetResult, len(keys))
-
-	// Group keys by partition, preserving request index for ordered results.
 	byPartition := make(map[string][]getBatchSlot)
 	for i, pk := range keys {
 		stored := pkToStore(pk)
 		partHex := stored.PartitionKey.ToHexString()
-		byPartition[partHex] = append(byPartition[partHex], getBatchSlot{idx: i, pk: pk})
+		rkHex := stored.RowKey.ToHexString()
+		byPartition[partHex] = append(byPartition[partHex], getBatchSlot{idx: i, pk: pk, partHex: partHex, rkHex: rkHex})
 	}
 
 	var wg sync.WaitGroup
@@ -131,6 +146,10 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 
 	for partHex, slots := range byPartition {
 		partHex, slots := partHex, slots
+		if ctx.Err() != nil {
+			fillSlotsNotFound(slots, results)
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -139,48 +158,37 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 			}
 			sem <- struct{}{}
 			defer func() { <-sem }()
-
 			if err := s.getBatchPartition(ctx, partHex, slots, results); err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				for _, sl := range slots {
-					results[sl.idx] = kv.BatchGetResult{Item: nil, Found: false}
-				}
+				assignFirstErr(&mu, &firstErr, err)
+				fillSlotsNotFound(slots, results)
 			}
 		}()
 	}
 	wg.Wait()
-	return results, firstErr
-}
-
-// getBatchPartition fetches multiple keys in one partition and writes into results by index.
-// Uses one GetEntity for a single key, or one Query (OData filter) for multiple keys, to minimize round-trips.
-func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []getBatchSlot, results []kv.BatchGetResult) error {
-	if len(slots) == 0 {
-		return nil
+	if firstErr != nil {
+		return results, firstErr
 	}
 	if ctx.Err() != nil {
+		return results, ctx.Err()
+	}
+	return results, nil
+}
+
+// getBatchPartition fetches all keys in one partition: one GetEntity for a single key, OData filter query for multiple.
+func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []getBatchSlot, results []kv.BatchGetResult) error {
+	if len(slots) == 0 || ctx.Err() != nil {
 		return ctx.Err()
 	}
-
 	uniqueRKHexes, slotsByRK := groupBatchSlotsByStoredRowKey(slots)
 	if len(uniqueRKHexes) == 1 {
-		if err := s.getBatchPoint(ctx, slotsByRK[uniqueRKHexes[0]], results); err != nil {
-			return err
-		}
-		return nil
+		return s.getBatchPoint(ctx, partHex, uniqueRKHexes[0], slotsByRK[uniqueRKHexes[0]], results)
 	}
 
 	queryChunks, pointGetRKHexes := splitBatchRowKeysForQuery(partHex, uniqueRKHexes)
-
 	var partWg sync.WaitGroup
 	var partMu sync.Mutex
 	var partErr error
 
-	// Run point-get fallbacks concurrently with query chunks.
 	for _, rkHex := range pointGetRKHexes {
 		rkHex := rkHex
 		partWg.Add(1)
@@ -189,17 +197,11 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 			if ctx.Err() != nil {
 				return
 			}
-			if err := s.getBatchPoint(ctx, slotsByRK[rkHex], results); err != nil {
-				partMu.Lock()
-				if partErr == nil {
-					partErr = err
-				}
-				partMu.Unlock()
+			if err := s.getBatchPoint(ctx, partHex, rkHex, slotsByRK[rkHex], results); err != nil {
+				assignFirstErr(&partMu, &partErr, err)
 			}
 		}()
 	}
-
-	// Run query chunks concurrently.
 	for _, chunk := range queryChunks {
 		chunk := chunk
 		partWg.Add(1)
@@ -215,11 +217,7 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 			for !pager.IsDone() {
 				entities, err := pager.FetchPage(ctx)
 				if err != nil {
-					partMu.Lock()
-					if partErr == nil {
-						partErr = fmt.Errorf("fetch page: %w", err)
-					}
-					partMu.Unlock()
+					assignFirstErr(&partMu, &partErr, fmt.Errorf("fetch page: %w", err))
 					return
 				}
 				for _, ent := range entities {
@@ -227,10 +225,11 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 				}
 			}
 			for _, rkHex := range chunk {
+				slotsForRK := slotsByRK[rkHex]
 				if value, ok := fetchedValues[rkHex]; ok {
-					setBatchResults(slotsByRK[rkHex], value, true, results)
+					setBatchResults(slotsForRK, value, true, results)
 				} else {
-					setBatchResults(slotsByRK[rkHex], nil, false, results)
+					setBatchResults(slotsForRK, nil, false, results)
 				}
 			}
 		}()
@@ -239,16 +238,21 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 	return partErr
 }
 
-func (s *store) getBatchPoint(ctx context.Context, slots []getBatchSlot, results []kv.BatchGetResult) error {
-	item, err := s.Get(ctx, slots[0].pk)
+func (s *store) getBatchPoint(ctx context.Context, partHex, rkHex string, slots []getBatchSlot, results []kv.BatchGetResult) error {
+	resp, err := s.client.GetEntity(ctx, partHex, rkHex)
 	if err != nil {
+		if isNotFound(err) {
+			setBatchResults(slots, nil, false, results)
+			return nil
+		}
 		return err
 	}
-	if item == nil {
-		setBatchResults(slots, nil, false, results)
-		return nil
+	var entity Entity
+	if err := json.Unmarshal(resp, &entity); err != nil {
+		slog.ErrorContext(ctx, "getBatchPoint decode failed", "err", err)
+		return fmt.Errorf("decode entity: %w", err)
 	}
-	setBatchResults(slots, item.Value, true, results)
+	setBatchResults(slots, entity.Value, true, results)
 	return nil
 }
 
@@ -256,8 +260,7 @@ func groupBatchSlotsByStoredRowKey(slots []getBatchSlot) ([]string, map[string][
 	uniqueRKHexes := make([]string, 0, len(slots))
 	slotsByRK := make(map[string][]getBatchSlot, len(slots))
 	for _, sl := range slots {
-		stored := pkToStore(sl.pk)
-		rkHex := stored.RowKey.ToHexString()
+		rkHex := sl.rkHex
 		if _, exists := slotsByRK[rkHex]; !exists {
 			uniqueRKHexes = append(uniqueRKHexes, rkHex)
 		}
@@ -266,31 +269,32 @@ func groupBatchSlotsByStoredRowKey(slots []getBatchSlot) ([]string, map[string][
 	return uniqueRKHexes, slotsByRK
 }
 
+// splitBatchRowKeysForQuery splits row keys into query chunks (OData filter) and keys that must use point GetEntity (filter too long).
 func splitBatchRowKeysForQuery(partHex string, rowKeyHexes []string) ([][]string, []string) {
-	queryChunks := make([][]string, 0)
-	pointGetRKHexes := make([]string, 0)
+	var queryChunks [][]string
+	var pointGetRKHexes []string
 	chunk := make([]string, 0, min(len(rowKeyHexes), getBatchMaxRowKeysPerQuery))
 
 	pkEscaped := escapeODataString(partHex)
 	baseLen := len("PartitionKey eq '") + len(pkEscaped) + len("' and (") + len(")")
-	const rowKeyPrefixLen = len("RowKey eq '")
-	const rowKeySuffixLen = len("'")
+	partitionOnlyLen := baseLen - len(" and ()")
+	const rkClauseLen = len("RowKey eq '") + len("'")
 	const orLen = len(" or ")
 
-	// Pre-compute escaped length per row key for filter-length arithmetic.
 	rkEscapedLens := make([]int, len(rowKeyHexes))
 	for i, rk := range rowKeyHexes {
 		rkEscapedLens[i] = len(escapeODataString(rk))
 	}
 
-	filterLenForChunk := func(rkLens []int) int {
+	// OData filter length: PartitionKey eq 'pk' and (RowKey eq 'r1' or RowKey eq 'r2' or ...)
+	calcFilterLen := func(rkLens []int) int {
 		if len(rkLens) == 0 {
-			return baseLen - len(" and ()")
+			return partitionOnlyLen
 		}
 		n := len(rkLens)
 		total := baseLen
 		for _, l := range rkLens {
-			total += rowKeyPrefixLen + l + rowKeySuffixLen
+			total += rkClauseLen + l
 		}
 		if n > 1 {
 			total += (n - 1) * orLen
@@ -306,20 +310,18 @@ func splitBatchRowKeysForQuery(partHex string, rowKeyHexes []string) ([][]string
 		chunk = chunk[:0]
 	}
 
-	chunkLens := make([]int, 0, len(rowKeyHexes))
+	var chunkLens []int
 	for i, rkHex := range rowKeyHexes {
 		candidateLens := append(chunkLens, rkEscapedLens[i])
 		candidateCount := len(chunk) + 1
-		filterLen := filterLenForChunk(candidateLens)
-		if candidateCount <= getBatchMaxRowKeysPerQuery && filterLen <= getBatchMaxFilterLength {
+		if candidateCount <= getBatchMaxRowKeysPerQuery && calcFilterLen(candidateLens) <= getBatchMaxFilterLength {
 			chunk = append(chunk, rkHex)
 			chunkLens = candidateLens
 			continue
 		}
 		flushChunk()
 		chunkLens = chunkLens[:0]
-
-		singleLen := filterLenForChunk([]int{rkEscapedLens[i]})
+		singleLen := calcFilterLen([]int{rkEscapedLens[i]})
 		if singleLen > getBatchMaxFilterLength {
 			pointGetRKHexes = append(pointGetRKHexes, rkHex)
 			continue

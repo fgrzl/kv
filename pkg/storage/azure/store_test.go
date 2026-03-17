@@ -211,16 +211,19 @@ func TestGetBatchReturnsAllDuplicateKeys(t *testing.T) {
 func TestGroupBatchSlotsByStoredRowKeyKeepsDuplicates(t *testing.T) {
 	pkA := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("a"))
 	pkB := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("b"))
+	storedA, storedB := pkToStore(pkA), pkToStore(pkB)
+	partHexA, rkHexA := storedA.PartitionKey.ToHexString(), storedA.RowKey.ToHexString()
+	rkHexB := storedB.RowKey.ToHexString()
 
 	uniqueRKHexes, slotsByRK := groupBatchSlotsByStoredRowKey([]getBatchSlot{
-		{idx: 0, pk: pkA},
-		{idx: 1, pk: pkA},
-		{idx: 2, pk: pkB},
+		{idx: 0, pk: pkA, partHex: partHexA, rkHex: rkHexA},
+		{idx: 1, pk: pkA, partHex: partHexA, rkHex: rkHexA},
+		{idx: 2, pk: pkB, partHex: partHexA, rkHex: rkHexB},
 	})
 
 	assert.Len(t, uniqueRKHexes, 2)
-	assert.Len(t, slotsByRK[pkToStore(pkA).RowKey.ToHexString()], 2)
-	assert.Len(t, slotsByRK[pkToStore(pkB).RowKey.ToHexString()], 1)
+	assert.Len(t, slotsByRK[rkHexA], 2)
+	assert.Len(t, slotsByRK[rkHexB], 1)
 }
 
 func TestSplitBatchRowKeysForQueryRespectsFilterLength(t *testing.T) {
