@@ -157,14 +157,14 @@ func (ts *TimeSeries) QueryRange(ctx context.Context, series string, from, to in
 
 // DeleteSeries removes all samples for a series.
 func (ts *TimeSeries) DeleteSeries(ctx context.Context, series string) error {
-	slog.InfoContext(ctx, "deleting timeseries series", "series", series)
+	slog.DebugContext(ctx, "deleting timeseries series", "series", series)
 	rangeKey := lexkey.NewRangeKeyFull(ts.partition(series))
 	err := ts.store.RemoveRange(ctx, rangeKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to delete timeseries series", "series", series, "err", err)
 		return err
 	}
-	slog.InfoContext(ctx, "timeseries series deleted", "series", series)
+	slog.DebugContext(ctx, "timeseries series deleted", "series", series)
 	return nil
 }
 

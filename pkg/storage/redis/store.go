@@ -51,7 +51,7 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 		return nil, err
 	}
 
-	slog.InfoContext(ctx, "Redis store initialized", "addr", cfg.Addr, "db", cfg.DB, "prefix", cfg.Prefix)
+	slog.DebugContext(ctx, "Redis store initialized", "addr", cfg.Addr, "db", cfg.DB, "prefix", cfg.Prefix)
 	return &Store{client: client, prefix: cfg.Prefix}, nil
 }
 
@@ -112,7 +112,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 	}
 	_, err := pipe.Exec(ctx)
 	if err != nil && err != redis.Nil {
-		slog.ErrorContext(ctx, "redis pipeline get failed", "err", err)
+		slog.ErrorContext(ctx, "redis pipeline get failed", "key_count", len(keys), "err", err)
 		return nil, err
 	}
 
@@ -124,7 +124,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 			continue
 		}
 		if err != nil {
-			slog.ErrorContext(ctx, "redis get error", "index", i, "err", err)
+			slog.ErrorContext(ctx, "redis get error", "index", i, "key", r.mkKeyHex(keys[i]), "err", err)
 			return nil, err
 		}
 		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: keys[i], Value: val}, Found: true}
@@ -194,7 +194,7 @@ func (r *Store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 		stripped := r.stripPrefix(key)
 		var encoded lexkey.LexKey
 		if err := encoded.FromHexString(stripped); err != nil {
-			slog.WarnContext(ctx, "invalid lexkey during scan", "key", key, "err", err)
+			slog.WarnContext(ctx, "skipping invalid lexkey during scan", "partition_key", rangeKey.PartitionKey.ToHexString(), "key", key, "err", err)
 			continue
 		}
 		// reconstruct primary key from the encoded bytes
@@ -212,12 +212,12 @@ func (r *Store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 		}
 	}
 	if err := iter.Err(); err != nil {
-		slog.ErrorContext(ctx, "redis scan failed", "err", err)
+		slog.ErrorContext(ctx, "redis scan failed", "partition_key", rangeKey.PartitionKey.ToHexString(), "match", pattern, "err", err)
 		return err
 	}
 	if len(keys) > 0 {
 		if err := r.client.Del(ctx, keys...).Err(); err != nil {
-			slog.ErrorContext(ctx, "redis delete range failed", "count", len(keys), "err", err)
+			slog.ErrorContext(ctx, "redis delete range failed", "partition_key", rangeKey.PartitionKey.ToHexString(), "match", pattern, "count", len(keys), "err", err)
 			return err
 		}
 	}
@@ -269,7 +269,7 @@ func (r *Store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 		stripped := r.stripPrefix(key)
 		var encoded lexkey.LexKey
 		if err := encoded.FromHexString(stripped); err != nil {
-			slog.WarnContext(ctx, "invalid lexkey", "key", key, "err", err)
+			slog.ErrorContext(ctx, "invalid lexkey during enumerate", "key", key, "err", err)
 			return nil, false, kv.ErrInvalidLexKey
 		}
 		pk := lexkey.NewPrimaryKey(encoded[:len(rk.PartitionKey)], encoded[len(rk.PartitionKey)+1:])
@@ -278,7 +278,7 @@ func (r *Store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 		}
 		item, err := r.Get(ctx, pk)
 		if err != nil {
-			slog.WarnContext(ctx, "enumerate get failed", "key", key, "err", err)
+			slog.ErrorContext(ctx, "enumerate get failed", "key", key, "err", err)
 			return nil, false, err
 		}
 		count++
@@ -299,13 +299,13 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 		case kv.Delete:
 			pipe.Del(ctx, key)
 		default:
-			slog.WarnContext(ctx, "invalid batch op", "index", i, "op", item.Op)
+			slog.ErrorContext(ctx, "invalid batch op", "index", i, "key", key, "op", item.Op)
 			return kv.ErrInvalidBatchOperation
 		}
 	}
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "batch exec failed", "err", err)
+		slog.ErrorContext(ctx, "batch exec failed", "item_count", len(items), "err", err)
 		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
 	}
 	return nil

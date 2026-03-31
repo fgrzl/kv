@@ -59,7 +59,7 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 	if err := s.createTableIfNotExists(context.Background()); err != nil {
 		return nil, err
 	}
-	slog.InfoContext(context.Background(), "Azure table store initialized", "table", options.Table)
+	slog.DebugContext(context.Background(), "Azure table store initialized", "table", options.Table)
 	return s, nil
 }
 
@@ -84,12 +84,12 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		if isNotFound(err) {
 			return nil, nil
 		}
-		slog.ErrorContext(ctx, "failed to get entity", "pk", pk, "err", err)
+		slog.ErrorContext(ctx, "failed to get entity", "table", s.options.Table, "pk", pk, "err", err)
 		return nil, fmt.Errorf("get entity failed: %w", err)
 	}
 	var entity Entity
 	if err := json.Unmarshal(resp, &entity); err != nil {
-		slog.ErrorContext(ctx, "failed to decode entity", "err", err)
+		slog.ErrorContext(ctx, "failed to decode entity", "table", s.options.Table, "pk", pk, "err", err)
 		return nil, fmt.Errorf("decode failed: %w", err)
 	}
 	return &kv.Item{PK: pk, Value: entity.Value}, nil
@@ -249,7 +249,7 @@ func (s *store) getBatchPoint(ctx context.Context, partHex, rkHex string, slots 
 	}
 	var entity Entity
 	if err := json.Unmarshal(resp, &entity); err != nil {
-		slog.ErrorContext(ctx, "getBatchPoint decode failed", "err", err)
+		slog.ErrorContext(ctx, "getBatchPoint decode failed", "table", s.options.Table, "partition_key", partHex, "row_key", rkHex, "err", err)
 		return fmt.Errorf("decode entity: %w", err)
 	}
 	setBatchResults(slots, entity.Value, true, results)
@@ -385,7 +385,7 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 		if errors.As(err, &azErr) && azErr.StatusCode == 409 {
 			return kv.ErrAlreadyExists
 		}
-		slog.ErrorContext(ctx, "insert failed", "pk", item.PK, "err", err)
+		slog.ErrorContext(ctx, "insert failed", "table", s.options.Table, "pk", item.PK, "err", err)
 		return err
 	}
 	return nil
@@ -399,7 +399,7 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	}
 	err = s.client.UpsertEntity(ctx, entityJSON, "Replace")
 	if err != nil {
-		slog.ErrorContext(ctx, "put failed", "pk", item.PK, "err", err)
+		slog.ErrorContext(ctx, "put failed", "table", s.options.Table, "pk", item.PK, "err", err)
 	}
 	return err
 }
@@ -408,7 +408,7 @@ func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 	storedPK := pkToStore(pk)
 	err := s.client.DeleteEntity(ctx, storedPK.PartitionKey.ToHexString(), storedPK.RowKey.ToHexString())
 	if err != nil {
-		slog.ErrorContext(ctx, "delete failed", "pk", pk, "err", err)
+		slog.ErrorContext(ctx, "delete failed", "table", s.options.Table, "pk", pk, "err", err)
 	}
 	return err
 }
@@ -451,7 +451,7 @@ func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 			return nil
 		}
 		if err := s.Batch(ctx, batch); err != nil {
-			slog.ErrorContext(ctx, "range batch delete failed", "err", err)
+			slog.ErrorContext(ctx, "range batch delete failed", "table", s.options.Table, "partition_key", rangeKey.PartitionKey.ToHexString(), "batch_size", len(batch), "err", err)
 			return err
 		}
 		batch = batch[:0]

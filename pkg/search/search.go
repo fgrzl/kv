@@ -547,8 +547,9 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 
 	tokenItems, err := o.store.GetBatch(ctx, tokenPKs...)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: batch load token registries failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to load token registries",
 			"index", o.name,
+			"entity_count", len(entities),
 			"err", err,
 		)
 		span.RecordError(err)
@@ -715,6 +716,7 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 			o.log.ErrorContext(ctx, "searchoverlay: batch index failed",
 				"index", o.name,
 				"entity_count", len(entities),
+				"batch_size", len(batch),
 				"err", err,
 			)
 			span.RecordError(err)
@@ -805,6 +807,7 @@ func (o *overlay) Delete(ctx context.Context, id string) error {
 			o.log.ErrorContext(ctx, "searchoverlay: delete batch failed",
 				"index", o.name,
 				"entity_id", id,
+				"batch_size", len(batch),
 				"err", err,
 			)
 			span.RecordError(err)
@@ -1131,7 +1134,7 @@ func (o *overlay) ListFields(ctx context.Context) ([]string, error) {
 
 	items, err := o.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: list fields query failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to query field registry",
 			"index", o.name,
 			"err", err,
 		)
@@ -1146,6 +1149,7 @@ func (o *overlay) ListFields(ctx context.Context) ([]string, error) {
 		if err := json.Unmarshal(it.Value, &fe); err != nil {
 			o.log.WarnContext(ctx, "searchoverlay: skipping malformed field entry",
 				"index", o.name,
+				"row_key", it.PK.RowKey.ToHexString(),
 				"err", err,
 			)
 			continue
@@ -1252,9 +1256,11 @@ func (o *overlay) searchValueIndex(
 
 	items, err := o.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: value index query failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to query value index",
 			"index", o.name,
 			"token", token,
+			"first_letter", firstLetter,
+			"limit", limit,
 			"err", err,
 		)
 		return err
@@ -1271,6 +1277,8 @@ func (o *overlay) searchValueIndex(
 		if err != nil {
 			o.log.WarnContext(ctx, "searchoverlay: skipping malformed value posting",
 				"index", o.name,
+				"token", token,
+				"row_key", it.PK.RowKey.ToHexString(),
 				"err", err,
 			)
 			continue
@@ -1350,10 +1358,12 @@ func (o *overlay) searchFieldIndexes(
 
 			items, err := o.store.Query(ctx, args, kv.Ascending)
 			if err != nil {
-				o.log.ErrorContext(ctx, "searchoverlay: field index query failed",
+				o.log.ErrorContext(ctx, "searchoverlay: failed to query field index",
 					"index", o.name,
 					"field", f,
 					"token", token,
+					"first_letter", firstLetter,
+					"limit", limit,
 					"err", err,
 				)
 				resultsChan <- fieldResults{err: err}
@@ -1376,6 +1386,8 @@ func (o *overlay) searchFieldIndexes(
 					o.log.WarnContext(ctx, "searchoverlay: skipping malformed field posting",
 						"index", o.name,
 						"field", f,
+						"token", token,
+						"row_key", it.PK.RowKey.ToHexString(),
 						"err", err,
 					)
 					continue
@@ -1448,8 +1460,9 @@ func (o *overlay) hydrateHits(
 
 	items, err := o.store.GetBatch(ctx, pks...)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: hydrate GetBatch failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to hydrate search hits",
 			"index", o.name,
+			"entity_count", len(entityIDs),
 			"err", err,
 		)
 		return nil, err
@@ -1635,7 +1648,7 @@ func (o *overlay) computeCorpusStats(ctx context.Context) (docCount int, totalDo
 
 	items, err := o.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: token registry scan failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to scan token registries",
 			"index", o.name,
 			"err", err,
 		)
@@ -1647,6 +1660,7 @@ func (o *overlay) computeCorpusStats(ctx context.Context) (docCount int, totalDo
 		if err := json.Unmarshal(it.Value, &reg); err != nil {
 			o.log.WarnContext(ctx, "searchoverlay: skipping malformed token registry",
 				"index", o.name,
+				"row_key", it.PK.RowKey.ToHexString(),
 				"err", err,
 			)
 			continue
@@ -1670,8 +1684,9 @@ func (o *overlay) loadDocLengths(ctx context.Context, entityIDs []string) (map[s
 
 	items, err := o.store.GetBatch(ctx, pks...)
 	if err != nil {
-		o.log.ErrorContext(ctx, "searchoverlay: token registry GetBatch failed",
+		o.log.ErrorContext(ctx, "searchoverlay: failed to load token registry batch",
 			"index", o.name,
+			"entity_count", len(entityIDs),
 			"err", err,
 		)
 		return nil, err

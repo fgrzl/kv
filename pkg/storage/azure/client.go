@@ -61,7 +61,7 @@ func getClient(options *TableProviderOptions) (*client.HTTPTableClient, error) {
 		cl.SetHTTPClient(options.HTTPClient)
 	}
 
-	slog.Info("azure table client configured",
+	slog.Debug("azure table client configured",
 		"endpoint", cl.Endpoint(),
 		"account", cl.AccountName(),
 		"table", cl.TableName(),

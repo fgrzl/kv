@@ -50,7 +50,7 @@ func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
 	if err != nil {
 		return nil, err
 	}
-	slog.InfoContext(context.Background(), "Pebble store initialized", "path", path)
+	slog.DebugContext(context.Background(), "Pebble store initialized", "path", path)
 	return store, nil
 }
 

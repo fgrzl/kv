@@ -15,6 +15,8 @@ Contributions are welcome. This document covers workflow, standards, and how to 
 - Follow standard Go conventions: `go fmt`, `go vet`.
 - Add tests for new functionality and update documentation for API changes.
 - For features that touch the KV interface or storage, ensure all supported backends are considered and maintain backward compatibility.
+- Keep library logs quiet by default: use `debug` for routine success paths and start/end tracing, `warn` for recoverable skipped or malformed data, and `error` when the operation returns an error.
+- Include the identifier that helps isolate the failure quickly, such as graph, index, series, stage/space, document id, or key.
 
 For detailed code style, patterns, and testing guidelines (e.g. Arrange-Act-Assert, use of `lexkey`, enumerators), see [.github/copilot-instructions.md](.github/copilot-instructions.md). Those guidelines reflect how the maintainers expect the codebase to be written.
 

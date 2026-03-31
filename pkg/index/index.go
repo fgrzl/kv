@@ -81,7 +81,7 @@ func (i *indexStore) Index(ctx context.Context, doc Document) error {
 	}
 	docBytes, err := json.Marshal(sd)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal document", "doc_id", doc.ID, "err", err)
+		slog.ErrorContext(ctx, "failed to marshal document", "index", i.name, "doc_id", doc.ID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -90,7 +90,7 @@ func (i *indexStore) Index(ctx context.Context, doc Document) error {
 	docPK := lexkey.NewPrimaryKey(i.documentPartition(), lexkey.Encode(doc.ID))
 	err = i.store.Put(ctx, &kv.Item{PK: docPK, Value: docBytes})
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to store document", "doc_id", doc.ID, "err", err)
+		slog.ErrorContext(ctx, "failed to store document", "index", i.name, "doc_id", doc.ID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -101,7 +101,7 @@ func (i *indexStore) Index(ctx context.Context, doc Document) error {
 		posting := storedPosting{DocID: doc.ID, Meta: meta}
 		postingBytes, err := json.Marshal(posting)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to marshal posting", "doc_id", doc.ID, "term", term, "err", err)
+			slog.ErrorContext(ctx, "failed to marshal posting", "index", i.name, "doc_id", doc.ID, "term", term, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -110,14 +110,14 @@ func (i *indexStore) Index(ctx context.Context, doc Document) error {
 		termPK := lexkey.NewPrimaryKey(i.termPartition(term), lexkey.Encode(doc.ID))
 		err = i.store.Put(ctx, &kv.Item{PK: termPK, Value: postingBytes})
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to store posting", "doc_id", doc.ID, "term", term, "err", err)
+			slog.ErrorContext(ctx, "failed to store posting", "index", i.name, "doc_id", doc.ID, "term", term, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
 
-	slog.DebugContext(ctx, "document indexed", "doc_id", doc.ID, "term_count", len(doc.Terms))
+	slog.DebugContext(ctx, "document indexed", "index", i.name, "doc_id", doc.ID, "term_count", len(doc.Terms))
 	return nil
 }
 
@@ -155,7 +155,7 @@ func (i *indexStore) BatchIndex(ctx context.Context, docs []Document) error {
 		}
 		docBytes, err := json.Marshal(sd)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to marshal document", "doc_id", doc.ID, "err", err)
+			slog.ErrorContext(ctx, "failed to marshal document", "index", i.name, "doc_id", doc.ID, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -175,7 +175,7 @@ func (i *indexStore) BatchIndex(ctx context.Context, docs []Document) error {
 			posting := storedPosting{DocID: doc.ID, Meta: meta}
 			postingBytes, err := json.Marshal(posting)
 			if err != nil {
-				slog.ErrorContext(ctx, "failed to marshal posting", "doc_id", doc.ID, "term", term, "err", err)
+				slog.ErrorContext(ctx, "failed to marshal posting", "index", i.name, "doc_id", doc.ID, "term", term, "err", err)
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())
 				return err
@@ -194,14 +194,14 @@ func (i *indexStore) BatchIndex(ctx context.Context, docs []Document) error {
 	// Execute each batch grouped by partition key
 	for _, batch := range batchesByPartition {
 		if err := i.store.Batch(ctx, batch); err != nil {
-			slog.ErrorContext(ctx, "failed to batch index documents", "doc_count", len(docs), "err", err)
+			slog.ErrorContext(ctx, "failed to batch index documents", "index", i.name, "doc_count", len(docs), "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
 
-	slog.DebugContext(ctx, "documents batch indexed", "doc_count", len(docs))
+	slog.DebugContext(ctx, "documents batch indexed", "index", i.name, "doc_count", len(docs))
 	return nil
 }
 
@@ -224,7 +224,7 @@ func (i *indexStore) Delete(ctx context.Context, docID string) error {
 	// Retrieve the document to get all its terms
 	doc, err := i.GetDocument(ctx, docID)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to retrieve document for deletion", "doc_id", docID, "err", err)
+		slog.ErrorContext(ctx, "failed to retrieve document for deletion", "index", i.name, "doc_id", docID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -237,7 +237,7 @@ func (i *indexStore) Delete(ctx context.Context, docID string) error {
 	docPK := lexkey.NewPrimaryKey(i.documentPartition(), lexkey.Encode(docID))
 	err = i.store.Remove(ctx, docPK)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to delete document", "doc_id", docID, "err", err)
+		slog.ErrorContext(ctx, "failed to delete document", "index", i.name, "doc_id", docID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -248,14 +248,14 @@ func (i *indexStore) Delete(ctx context.Context, docID string) error {
 		termPK := lexkey.NewPrimaryKey(i.termPartition(term), lexkey.Encode(docID))
 		err = i.store.Remove(ctx, termPK)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to delete posting", "doc_id", docID, "term", term, "err", err)
+			slog.ErrorContext(ctx, "failed to delete posting", "index", i.name, "doc_id", docID, "term", term, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
 
-	slog.DebugContext(ctx, "document deleted", "doc_id", docID)
+	slog.DebugContext(ctx, "document deleted", "index", i.name, "doc_id", docID)
 	return nil
 }
 
@@ -272,7 +272,7 @@ func (i *indexStore) Search(ctx context.Context, term string) ([]SearchResult, e
 	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
 	items, err := i.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to query postings", "term", term, "err", err)
+		slog.ErrorContext(ctx, "failed to query postings", "index", i.name, "term", term, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -282,13 +282,13 @@ func (i *indexStore) Search(ctx context.Context, term string) ([]SearchResult, e
 	for _, it := range items {
 		var sp storedPosting
 		if err := json.Unmarshal(it.Value, &sp); err != nil {
-			slog.WarnContext(ctx, "skipping malformed posting", "term", term, "err", err)
+			slog.WarnContext(ctx, "skipping malformed posting", "index", i.name, "term", term, "err", err)
 			continue
 		}
 		results = append(results, SearchResult{ID: sp.DocID, Score: 1.0, Meta: sp.Meta})
 	}
 
-	slog.DebugContext(ctx, "search completed", "term", term, "result_count", len(results))
+	slog.DebugContext(ctx, "search completed", "index", i.name, "term", term, "result_count", len(results))
 	return results, nil
 }
 
@@ -350,7 +350,7 @@ func (i *indexStore) SearchMulti(ctx context.Context, terms []string) ([]SearchR
 		out = append(out, r)
 	}
 
-	slog.DebugContext(ctx, "multi-search completed", "term_count", len(terms), "result_count", len(out))
+	slog.DebugContext(ctx, "multi-search completed", "index", i.name, "term_count", len(terms), "result_count", len(out))
 	return out, nil
 }
 
@@ -372,7 +372,7 @@ func (i *indexStore) GetDocument(ctx context.Context, docID string) (*Document, 
 	docPK := lexkey.NewPrimaryKey(i.documentPartition(), lexkey.Encode(docID))
 	item, err := i.store.Get(ctx, docPK)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to get document", "doc_id", docID, "err", err)
+		slog.ErrorContext(ctx, "failed to get document", "index", i.name, "doc_id", docID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -383,7 +383,7 @@ func (i *indexStore) GetDocument(ctx context.Context, docID string) (*Document, 
 
 	var sd storedDocument
 	if err := json.Unmarshal(item.Value, &sd); err != nil {
-		slog.ErrorContext(ctx, "failed to unmarshal document", "doc_id", docID, "err", err)
+		slog.ErrorContext(ctx, "failed to unmarshal document", "index", i.name, "doc_id", docID, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -397,7 +397,7 @@ func (i *indexStore) GetDocument(ctx context.Context, docID string) (*Document, 
 		doc.Terms[term] = raw
 	}
 
-	slog.DebugContext(ctx, "document retrieved", "doc_id", docID, "term_count", len(doc.Terms))
+	slog.DebugContext(ctx, "document retrieved", "index", i.name, "doc_id", docID, "term_count", len(doc.Terms))
 	return doc, nil
 }
 

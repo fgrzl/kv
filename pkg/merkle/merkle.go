@@ -218,7 +218,7 @@ func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerator
 		))
 	defer span.End()
 
-	slog.InfoContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
+	slog.DebugContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
 	if err := m.pruneOldNodes(ctx, stage, space); err != nil {
 		err = fmt.Errorf("prune old nodes for %s/%s: %w", stage, space, err)
 		slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
@@ -235,7 +235,7 @@ func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerator
 		return err
 	}
 	if len(currNodes) == 0 {
-		slog.InfoContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
+		slog.DebugContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
 		span.SetAttributes(attribute.Int("leaves", 0))
 		return nil
 	}
@@ -281,7 +281,7 @@ func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerator
 		return err
 	}
 
-	slog.InfoContext(ctx, "Merkle tree build completed", "stage", stage, "space", space, "leaves", actualLeafCount)
+	slog.DebugContext(ctx, "Merkle tree build completed", "stage", stage, "space", space, "leaves", actualLeafCount)
 	span.SetAttributes(attribute.Int("leaves", actualLeafCount))
 	return nil
 }
@@ -322,7 +322,7 @@ func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, []
 
 // Prune removes all Merkle nodes for the given stage and space.
 func (m *Tree) Prune(ctx context.Context, stage, space string) error {
-	slog.InfoContext(ctx, "pruning Merkle tree", "stage", stage, "space", space)
+	slog.DebugContext(ctx, "pruning Merkle tree", "stage", stage, "space", space)
 	partition := lexkey.Encode("merkle", stage, space)
 	rangeKey := lexkey.NewRangeKeyFull(partition)
 	err := m.store.RemoveRange(ctx, rangeKey)
@@ -330,7 +330,7 @@ func (m *Tree) Prune(ctx context.Context, stage, space string) error {
 		slog.ErrorContext(ctx, "failed to prune Merkle tree", "stage", stage, "space", space, "err", err)
 		return err
 	}
-	slog.InfoContext(ctx, "Merkle tree pruned", "stage", stage, "space", space)
+	slog.DebugContext(ctx, "Merkle tree pruned", "stage", stage, "space", space)
 	return nil
 }
 
@@ -458,7 +458,7 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 		))
 	defer span.End()
 
-	slog.InfoContext(ctx, "updating leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
+	slog.DebugContext(ctx, "updating leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
 
 	// Persist the updated leaf
 	val, err := json.Marshal(newLeaf)
@@ -485,7 +485,7 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 		return err
 	}
 
-	slog.InfoContext(ctx, "leaf updated", "stage", stage, "space", space, "leafIndex", leafIndex)
+	slog.DebugContext(ctx, "leaf updated", "stage", stage, "space", space, "leafIndex", leafIndex)
 	return nil
 }
 
@@ -512,7 +512,7 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 		))
 	defer span.End()
 
-	slog.InfoContext(ctx, "adding leaf", "stage", stage, "space", space)
+	slog.DebugContext(ctx, "adding leaf", "stage", stage, "space", space)
 
 	// Get current leaf count
 	leafCount, err := m.GetLeafCount(ctx, stage, space)
@@ -570,7 +570,7 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 		return 0, err
 	}
 
-	slog.InfoContext(ctx, "leaf added", "stage", stage, "space", space, "leafIndex", leafCount)
+	slog.DebugContext(ctx, "leaf added", "stage", stage, "space", space, "leafIndex", leafCount)
 	span.SetAttributes(attribute.Int("leafIndex", leafCount))
 	return leafCount, nil
 }
@@ -600,7 +600,7 @@ func (m *Tree) RemoveLeaf(ctx context.Context, stage, space string, leafIndex in
 		))
 	defer span.End()
 
-	slog.InfoContext(ctx, "removing leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
+	slog.DebugContext(ctx, "removing leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
 
 	// INVARIANT: Soft delete preserves leaf indices. Hard delete would require reindexing
 	// all subsequent leaves, breaking external references and catalog diffs.
@@ -618,7 +618,7 @@ func (m *Tree) RemoveLeaf(ctx context.Context, stage, space string, leafIndex in
 		return err
 	}
 
-	slog.InfoContext(ctx, "leaf removed", "stage", stage, "space", space, "leafIndex", leafIndex)
+	slog.DebugContext(ctx, "leaf removed", "stage", stage, "space", space, "leafIndex", leafIndex)
 	return nil
 }
 

@@ -28,7 +28,7 @@ func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error 
 	sn := storedNode{ID: id, Meta: encodeMeta(meta)}
 	b, err := json.Marshal(sn)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal node", "id", id, "err", err)
+		slog.ErrorContext(ctx, "failed to marshal node", "id", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -37,12 +37,12 @@ func (g *graphStore) AddNode(ctx context.Context, id string, meta []byte) error 
 	// Use Put to make this operation idempotent (succeeds even if node already exists).
 	err = g.store.Put(ctx, &kv.Item{PK: pk, Value: b})
 	if err != nil {
-		slog.WarnContext(ctx, "failed to add node", "id", id, "err", err)
+		slog.ErrorContext(ctx, "failed to add node", "id", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	slog.InfoContext(ctx, "node added", "id", id, "graph", g.name)
+	slog.DebugContext(ctx, "node added", "id", id, "graph", g.name)
 	return nil
 }
 
@@ -50,21 +50,21 @@ func (g *graphStore) GetNode(ctx context.Context, id string) (*Node, error) {
 	pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
 	item, err := g.store.Get(ctx, pk)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to get node", "id", id, "err", err)
+		slog.ErrorContext(ctx, "failed to get node", "id", id, "graph", g.name, "err", err)
 		return nil, err
 	}
 	if item == nil {
-		slog.DebugContext(ctx, "node not found", "id", id)
+		slog.DebugContext(ctx, "node not found", "id", id, "graph", g.name)
 		return nil, nil
 	}
 	var sn storedNode
 	if err := json.Unmarshal(item.Value, &sn); err != nil {
-		slog.ErrorContext(ctx, "failed to unmarshal node", "id", id, "err", err)
+		slog.ErrorContext(ctx, "failed to unmarshal node", "id", id, "graph", g.name, "err", err)
 		return nil, err
 	}
 	meta, err := decodeMeta(sn.Meta)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to decode node meta", "id", id, "err", err)
+		slog.ErrorContext(ctx, "failed to decode node meta", "id", id, "graph", g.name, "err", err)
 		return nil, err
 	}
 	return &Node{ID: sn.ID, Meta: meta}, nil
@@ -91,7 +91,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 			return nil
 		}
 		if err := g.store.Batch(ctx, batch); err != nil {
-			slog.ErrorContext(ctx, "failed to flush delete batch", "node", id, "batch_size", len(batch), "err", err)
+			slog.ErrorContext(ctx, "failed to flush delete batch", "node", id, "graph", g.name, "batch_size", len(batch), "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -112,7 +112,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
 			// skip malformed entries
-			slog.WarnContext(ctx, "skipping malformed edge during delete", "node", id, "err", err)
+			slog.WarnContext(ctx, "skipping malformed outgoing edge during delete", "node", id, "graph", g.name, "err", err)
 			return nil
 		}
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(id), lexkey.Encode(se.To))
@@ -124,7 +124,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		}
 		return nil
 	}); err != nil {
-		slog.ErrorContext(ctx, "failed to enumerate outgoing edges", "node", id, "err", err)
+		slog.ErrorContext(ctx, "failed to enumerate outgoing edges", "node", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -137,9 +137,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	if err := enumerators.ForEach(inEnum, func(it *kv.Item) error {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
-			slog.ErrorContext(ctx, "failed to unmarshal incoming edge", "node", id, "err", err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			slog.WarnContext(ctx, "skipping malformed incoming edge during delete", "node", id, "graph", g.name, "err", err)
 			return nil
 		}
 		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(id), lexkey.Encode(se.From))
@@ -151,7 +149,7 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 		}
 		return nil
 	}); err != nil {
-		slog.ErrorContext(ctx, "failed to enumerate incoming edges", "node", id, "err", err)
+		slog.ErrorContext(ctx, "failed to enumerate incoming edges", "node", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -160,6 +158,6 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	if err := flush(); err != nil {
 		return err
 	}
-	slog.InfoContext(ctx, "node deleted", "id", id, "graph", g.name)
+	slog.DebugContext(ctx, "node deleted", "id", id, "graph", g.name)
 	return nil
 }

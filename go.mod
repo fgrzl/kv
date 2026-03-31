@@ -6,7 +6,7 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/fgrzl/azkit v0.1.1
 	github.com/fgrzl/enumerators v1.0.0-alpha.3
-	github.com/fgrzl/json v1.0.0-alpha.5
+	github.com/fgrzl/json v1.0.0-alpha.8
 	github.com/fgrzl/lexkey v0.1.0-alpha.35
 	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.18.0
@@ -31,12 +31,12 @@ require (
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/getsentry/sentry-go v0.43.0 // indirect
+	github.com/getsentry/sentry-go v0.44.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect

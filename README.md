@@ -113,6 +113,16 @@ store := kv.NewInstrumentedKV(pebbleStore, "pebble")
 - `batch_size`: Number of items in batch operations
 - `result`: Operation result (success, error, hit, miss)
 
+### Logging
+
+The library keeps logs quiet by default and relies on tracing and metrics for routine operation visibility.
+
+- `debug` is for routine successful operations, backend initialization, and operation start/end tracing.
+- `warn` is for recoverable malformed or skipped data where the operation continues.
+- `error` is for failures that cause the current operation to return an error.
+
+When adding logs, include the identifier needed to localize the failure quickly, such as the graph name, index name, series, stage and space, document id, or key.
+
 ---
 
 ## Installation

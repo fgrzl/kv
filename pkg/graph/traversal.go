@@ -32,7 +32,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
-			slog.DebugContext(ctx, "BFS cancelled", "visited", visited)
+			slog.DebugContext(ctx, "BFS cancelled", "graph", g.name, "visited", visited)
 			span.SetAttributes(attribute.Int("visited", visited))
 			return ctx.Err()
 		default:
@@ -43,7 +43,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 			continue
 		}
 		if err := visit(cur); err != nil {
-			slog.ErrorContext(ctx, "BFS visit failed", "node", cur, "err", err)
+			slog.ErrorContext(ctx, "BFS visit failed", "graph", g.name, "node", cur, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			span.SetAttributes(attribute.Int("visited", visited))
@@ -52,7 +52,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 		seen[cur] = struct{}{}
 		visited++
 		if limit > 0 && visited >= limit {
-			slog.DebugContext(ctx, "BFS limit reached", "visited", visited, "limit", limit)
+			slog.DebugContext(ctx, "BFS limit reached", "graph", g.name, "visited", visited, "limit", limit)
 			span.SetAttributes(attribute.Int("visited", visited))
 			return nil
 		}
@@ -63,14 +63,14 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 			}
 			return nil
 		}); err != nil {
-			slog.ErrorContext(ctx, "failed to enumerate neighbors", "node", cur, "err", err)
+			slog.ErrorContext(ctx, "failed to enumerate neighbors", "graph", g.name, "node", cur, "err", err)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			span.SetAttributes(attribute.Int("visited", visited))
 			return err
 		}
 	}
-	slog.DebugContext(ctx, "BFS completed", "visited", visited)
+	slog.DebugContext(ctx, "BFS completed", "graph", g.name, "visited", visited)
 	span.SetAttributes(attribute.Int("visited", visited))
 	return nil
 }

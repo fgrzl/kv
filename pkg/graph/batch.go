@@ -15,7 +15,7 @@ import (
 // and for each edge writes forward and reverse entries. It attempts a single
 // atomic batch when supported and falls back to chunked commits.
 func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) error {
-	slog.InfoContext(ctx, "starting batch add", "nodes", len(nodes), "edges", len(edges), "graph", g.name)
+	slog.DebugContext(ctx, "starting batch add", "nodes", len(nodes), "edges", len(edges), "graph", g.name)
 	// Pre-allocate with estimated capacity
 	ops := make([]*kv.BatchItem, 0, len(nodes)+2*len(edges))
 
@@ -24,7 +24,7 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 		sn := storedNode{ID: n.ID, Meta: encodeMeta(n.Meta)}
 		b, err := json.Marshal(sn)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to marshal node in batch", "id", n.ID, "err", err)
+			slog.ErrorContext(ctx, "failed to marshal node in batch", "graph", g.name, "id", n.ID, "err", err)
 			return err
 		}
 		pk := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(n.ID))
@@ -36,7 +36,7 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 		se := storedEdge{From: e.From, To: e.To, Meta: encodeMeta(e.Meta)}
 		b, err := json.Marshal(se)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to marshal edge in batch", "from", e.From, "to", e.To, "err", err)
+			slog.ErrorContext(ctx, "failed to marshal edge in batch", "graph", g.name, "from", e.From, "to", e.To, "err", err)
 			return err
 		}
 		pkF := lexkey.NewPrimaryKey(g.edgePartition(e.From), lexkey.Encode(e.To))
@@ -60,10 +60,10 @@ func (g *graphStore) BatchAdd(ctx context.Context, nodes []Node, edges []Edge) e
 			end = len(ops)
 		}
 		if err := g.store.Batch(ctx, ops[i:end]); err != nil {
-			slog.ErrorContext(ctx, "chunked batch failed", "chunk_start", i, "chunk_end", end, "err", err)
+			slog.ErrorContext(ctx, "failed to commit batch chunk", "graph", g.name, "chunk_start", i, "chunk_end", end, "err", err)
 			return err
 		}
 	}
-	slog.InfoContext(ctx, "batch add completed", "operations", len(ops), "graph", g.name)
+	slog.DebugContext(ctx, "batch add completed", "operations", len(ops), "graph", g.name)
 	return nil
 }
