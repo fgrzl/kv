@@ -104,6 +104,9 @@ const getBatchMaxRowKeysPerQuery = 100
 // getBatchMaxFilterLength keeps filters below Table Storage URL/query limits (~32KB max; 2–3KB safe for all environments including Azurite).
 const getBatchMaxFilterLength = 2048
 
+// batchMaxOperationsPerRequest is the Azure Table Storage transaction limit per batch request.
+const batchMaxOperationsPerRequest = 100
+
 // getBatchSlot holds request index, key, and precomputed hex for GetBatch (avoids repeated pkToStore/ToHexString).
 type getBatchSlot struct {
 	idx     int
@@ -506,9 +509,6 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-	if len(items) > 100 {
-		return kv.ErrInvalidBatchOperation
-	}
 
 	batchesByPartition := make(map[string][]*kv.BatchItem)
 	for _, item := range items {
@@ -516,8 +516,8 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 		batchesByPartition[key] = append(batchesByPartition[key], item)
 	}
 
-	for _, batch := range batchesByPartition {
-		if err := s.batchSinglePartition(ctx, batch); err != nil {
+	for _, partitionBatch := range batchesByPartition {
+		if err := s.batchSinglePartition(ctx, partitionBatch); err != nil {
 			return err
 		}
 	}
@@ -526,36 +526,48 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 }
 
 func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem) error {
-	var ops []client.BatchOp
-	for _, item := range items {
-		storedPK := pkToStore(item.PK)
-		switch item.Op {
-		case kv.Put:
-			raw, err := json.Marshal(Entity{
-				PartitionKey: storedPK.PartitionKey,
-				RowKey:       storedPK.RowKey,
-				Value:        item.Value,
-			})
-			if err != nil {
-				return fmt.Errorf("marshal failed: %w", err)
+	for i := 0; i < len(items); i += batchMaxOperationsPerRequest {
+		end := i + batchMaxOperationsPerRequest
+		if end > len(items) {
+			end = len(items)
+		}
+
+		chunk := items[i:end]
+		ops := make([]client.BatchOp, 0, len(chunk))
+		for _, item := range chunk {
+			storedPK := pkToStore(item.PK)
+			switch item.Op {
+			case kv.Put:
+				raw, err := json.Marshal(Entity{
+					PartitionKey: storedPK.PartitionKey,
+					RowKey:       storedPK.RowKey,
+					Value:        item.Value,
+				})
+				if err != nil {
+					return fmt.Errorf("marshal failed: %w", err)
+				}
+				ops = append(ops, client.BatchOp{Type: client.BatchInsertReplace, Entity: raw})
+			case kv.Delete:
+				ops = append(ops, client.BatchOp{
+					Type:         client.BatchDelete,
+					PartitionKey: storedPK.PartitionKey.ToHexString(),
+					RowKey:       storedPK.RowKey.ToHexString(),
+				})
+			default:
+				return kv.ErrInvalidBatchOperation
 			}
-			ops = append(ops, client.BatchOp{Type: client.BatchInsertReplace, Entity: raw})
-		case kv.Delete:
-			ops = append(ops, client.BatchOp{
-				Type:         client.BatchDelete,
-				PartitionKey: storedPK.PartitionKey.ToHexString(),
-				RowKey:       storedPK.RowKey.ToHexString(),
-			})
-		default:
-			return kv.ErrInvalidBatchOperation
+		}
+
+		err := s.client.SubmitBatch(ctx, ops)
+		if err != nil && errors.Is(err, io.ErrUnexpectedEOF) {
+			continue // Azurite quirk: sometimes returns unexpected EOF on batch success
+		}
+		if err != nil {
+			return err
 		}
 	}
 
-	err := s.client.SubmitBatch(ctx, ops)
-	if err != nil && errors.Is(err, io.ErrUnexpectedEOF) {
-		return nil // Azurite quirk: sometimes returns unexpected EOF on batch success
-	}
-	return err
+	return nil
 }
 
 func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*kv.BatchItem], chunkSize int) error {

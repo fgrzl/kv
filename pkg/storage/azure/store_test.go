@@ -3,6 +3,8 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -66,6 +68,35 @@ func (m *mockTableClient) NewListEntitiesPager(filter, selectCols string, top in
 
 func (m *mockTableClient) SubmitBatch(ctx context.Context, ops []client.BatchOp) error {
 	panic("SubmitBatch not implemented in mock")
+}
+
+type mockBatchTableClient struct {
+	*mockTableClient
+	submitBatchSizes []int
+}
+
+func newMockBatchTableClient() *mockBatchTableClient {
+	return &mockBatchTableClient{mockTableClient: newMockTableClient()}
+}
+
+func (m *mockBatchTableClient) SubmitBatch(ctx context.Context, ops []client.BatchOp) error {
+	m.submitBatchSizes = append(m.submitBatchSizes, len(ops))
+	return nil
+}
+
+func makeBatchItems(partition string, count int) []*kv.BatchItem {
+	items := make([]*kv.BatchItem, 0, count)
+	for i := 0; i < count; i++ {
+		items = append(items, &kv.BatchItem{
+			Op: kv.Put,
+			PK: lexkey.NewPrimaryKey(
+				lexkey.Encode(partition),
+				lexkey.Encode(fmt.Sprintf("row-%03d", i)),
+			),
+			Value: []byte("value"),
+		})
+	}
+	return items
 }
 
 func TestShouldGetItemFromAzureStore(t *testing.T) {
@@ -255,4 +286,32 @@ func TestSplitBatchRowKeysForQueryFallsBackToPointGet(t *testing.T) {
 
 	assert.Empty(t, queryChunks)
 	assert.Equal(t, []string{veryLongRowKey}, pointGets)
+}
+
+func TestBatchShouldChunkSinglePartitionIntoValidBatchSizes(t *testing.T) {
+	mockClient := newMockBatchTableClient()
+	store, err := NewAzureStoreWithClient(mockClient)
+	assert.NoError(t, err)
+
+	items := makeBatchItems("partition-a", 250)
+
+	err = store.Batch(context.Background(), items)
+
+	assert.NoError(t, err)
+	assert.Equal(t, []int{100, 100, 50}, mockClient.submitBatchSizes)
+}
+
+func TestBatchShouldChunkEachPartitionIndependently(t *testing.T) {
+	mockClient := newMockBatchTableClient()
+	store, err := NewAzureStoreWithClient(mockClient)
+	assert.NoError(t, err)
+
+	items := append(makeBatchItems("partition-a", 120), makeBatchItems("partition-b", 130)...)
+
+	err = store.Batch(context.Background(), items)
+
+	assert.NoError(t, err)
+	sizes := append([]int(nil), mockClient.submitBatchSizes...)
+	sort.Ints(sizes)
+	assert.Equal(t, []int{20, 30, 100, 100}, sizes)
 }
