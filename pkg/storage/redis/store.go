@@ -11,6 +11,7 @@ import (
 
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 	"github.com/redis/go-redis/v9"
 )
@@ -31,6 +32,7 @@ type RedisClient interface {
 type Store struct {
 	client RedisClient
 	prefix string
+	values *valuecodec.Codec
 	mu     sync.Mutex
 }
 
@@ -52,13 +54,14 @@ func NewRedisStore(options ...Option) (kv.KV, error) {
 	}
 
 	slog.DebugContext(ctx, "Redis store initialized", "addr", cfg.Addr, "db", cfg.DB, "prefix", cfg.Prefix)
-	return &Store{client: client, prefix: cfg.Prefix}, nil
+	return &Store{client: client, prefix: cfg.Prefix, values: cfg.ValueCodec}, nil
 }
 
 // NewRedisStoreWithClient creates a new Redis-backed kv.KV store with a provided client.
 // This is primarily for testing purposes.
-func NewRedisStoreWithClient(client RedisClient, prefix string) kv.KV {
-	return &Store{client: client, prefix: prefix}
+func NewRedisStoreWithClient(client RedisClient, prefix string, options ...Option) kv.KV {
+	cfg := applyOptions(append([]Option{WithPrefix(prefix)}, options...)...)
+	return &Store{client: client, prefix: cfg.Prefix, values: cfg.ValueCodec}
 }
 
 func (r *Store) Clear() {
@@ -98,7 +101,11 @@ func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		slog.ErrorContext(ctx, "redis get failed", "key", key, "err", err)
 		return nil, err
 	}
-	return &kv.Item{PK: pk, Value: val}, nil
+	decoded, err := r.values.Decode(val)
+	if err != nil {
+		return nil, err
+	}
+	return &kv.Item{PK: pk, Value: decoded}, nil
 }
 
 func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.BatchGetResult, error) {
@@ -127,14 +134,22 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 			slog.ErrorContext(ctx, "redis get error", "index", i, "key", r.mkKeyHex(keys[i]), "err", err)
 			return nil, err
 		}
-		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: keys[i], Value: val}, Found: true}
+		decoded, err := r.values.Decode(val)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: keys[i], Value: decoded}, Found: true}
 	}
 	return results, nil
 }
 
 func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
 	key := r.mkKeyHex(item.PK)
-	ok, err := r.client.SetNX(ctx, key, item.Value, 0).Result()
+	encoded, err := r.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	ok, err := r.client.SetNX(ctx, key, encoded, 0).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis insert failed", "key", key, "err", err)
 		return err
@@ -147,7 +162,11 @@ func (r *Store) Insert(ctx context.Context, item *kv.Item) error {
 
 func (r *Store) Put(ctx context.Context, item *kv.Item) error {
 	key := r.mkKeyHex(item.PK)
-	err := r.client.Set(ctx, key, item.Value, 0).Err()
+	encoded, err := r.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	err = r.client.Set(ctx, key, encoded, 0).Err()
 	if err != nil {
 		slog.ErrorContext(ctx, "redis put failed", "key", key, "err", err)
 		return err
@@ -295,7 +314,11 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 		key := r.mkKeyHex(item.PK)
 		switch item.Op {
 		case kv.Put:
-			pipe.Set(ctx, key, item.Value, 0)
+			encoded, err := r.values.Encode(item.Value)
+			if err != nil {
+				return err
+			}
+			pipe.Set(ctx, key, encoded, 0)
 		case kv.Delete:
 			pipe.Del(ctx, key)
 		default:

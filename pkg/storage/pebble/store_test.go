@@ -1,12 +1,14 @@
 package pebble
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 	"github.com/stretchr/testify/assert"
 )
@@ -59,6 +61,13 @@ func (m *mockPebbleDB) NewIterWithContext(ctx context.Context, opts *pebble.Iter
 
 func (m *mockPebbleDB) Close() error {
 	return nil
+}
+
+func TestNewOptionsShouldReturnPebbleOptions(t *testing.T) {
+	options := NewOptions(WithTableCacheShards(4))
+
+	assert.IsType(t, &pebble.Options{}, options)
+	assert.Equal(t, 4, options.Experimental.FileCacheShards)
 }
 
 func TestShouldGetItemFromPebbleStore(t *testing.T) {
@@ -189,4 +198,97 @@ func TestShouldRemoveItemFromPebbleStore(t *testing.T) {
 	retrieved, err := store.Get(context.Background(), pk)
 	assert.NoError(t, err)
 	assert.Nil(t, retrieved)
+}
+
+func TestShouldReadLegacyRawValueWhenCompressionEnabledInPebbleStore(t *testing.T) {
+	// Arrange
+	mockDB := newMockPebbleDB()
+	store, err := NewPebbleStoreWithDB(mockDB, WithValueCompression(testValueCompressionConfig()))
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("legacy"))
+	value := []byte("legacy raw value")
+	mockDB.data[string(pk.Encode())] = value
+
+	// Act
+	item, err := store.Get(context.Background(), pk)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, item)
+	assert.Equal(t, value, item.Value)
+}
+
+func TestShouldCompressValuesWhenConfiguredInPebbleStore(t *testing.T) {
+	// Arrange
+	mockDB := newMockPebbleDB()
+	store, err := NewPebbleStoreWithDB(mockDB, WithValueCompression(testValueCompressionConfig()))
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+	item := &kv.Item{PK: pk, Value: value}
+
+	// Act
+	err = store.Put(context.Background(), item)
+	assert.NoError(t, err)
+
+	// Assert
+	stored := mockDB.data[string(pk.Encode())]
+	assert.True(t, valuecodec.IsCompressed(stored))
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldCompressLargeValuesByDefaultInPebbleStore(t *testing.T) {
+	// Arrange
+	mockDB := newMockPebbleDB()
+	store, err := NewPebbleStoreWithDB(mockDB)
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("default-compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	// Act
+	err = store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+	assert.NoError(t, err)
+
+	// Assert
+	stored := mockDB.data[string(pk.Encode())]
+	assert.True(t, valuecodec.IsCompressed(stored))
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldKeepValuesRawWhenCompressionDisabledInPebbleStore(t *testing.T) {
+	// Arrange
+	mockDB := newMockPebbleDB()
+	store, err := NewPebbleStoreWithDB(mockDB, WithoutValueCompression())
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("disabled"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	// Act
+	err = store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+	assert.NoError(t, err)
+
+	// Assert
+	stored := mockDB.data[string(pk.Encode())]
+	assert.False(t, valuecodec.IsCompressed(stored))
+	assert.Equal(t, value, stored)
+}
+
+func testValueCompressionConfig() valuecodec.Config {
+	config := valuecodec.DefaultConfig()
+	config.MinInputSize = 1
+	config.MinSavingsBytes = 1
+	config.MaxEncodedRatio = 0.99
+	return config
 }

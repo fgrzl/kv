@@ -13,6 +13,7 @@ import (
 	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 )
 
@@ -31,6 +32,7 @@ type TableClient interface {
 type store struct {
 	options *TableProviderOptions
 	client  TableClient
+	values  *valuecodec.Codec
 }
 
 var _ kv.KV = (*store)(nil)
@@ -47,7 +49,7 @@ type Entity struct {
 // It requires WithEndpoint and either WithSharedKey or WithManagedIdentity.
 // The table is created if it does not exist.
 func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
-	options := &TableProviderOptions{}
+	options := &TableProviderOptions{ValueCodec: valuecodec.New(valuecodec.DefaultConfig())}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -55,7 +57,7 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create table client: %w", err)
 	}
-	s := &store{options: options, client: client}
+	s := &store{options: options, client: client, values: options.ValueCodec}
 	if err := s.createTableIfNotExists(context.Background()); err != nil {
 		return nil, err
 	}
@@ -66,11 +68,11 @@ func NewAzureStore(opts ...StoreOption) (kv.KV, error) {
 // NewAzureStoreWithClient creates a new Azure-backed kv.KV store with a provided client.
 // This is primarily for testing purposes.
 func NewAzureStoreWithClient(client TableClient, opts ...StoreOption) (kv.KV, error) {
-	options := &TableProviderOptions{}
+	options := &TableProviderOptions{ValueCodec: valuecodec.New(valuecodec.DefaultConfig())}
 	for _, opt := range opts {
 		opt(options)
 	}
-	return &store{options: options, client: client}, nil
+	return &store{options: options, client: client, values: options.ValueCodec}, nil
 }
 
 func (s *store) createTableIfNotExists(ctx context.Context) error {
@@ -92,7 +94,11 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		slog.ErrorContext(ctx, "failed to decode entity", "table", s.options.Table, "pk", pk, "err", err)
 		return nil, fmt.Errorf("decode failed: %w", err)
 	}
-	return &kv.Item{PK: pk, Value: entity.Value}, nil
+	decoded, err := s.values.Decode(entity.Value)
+	if err != nil {
+		return nil, err
+	}
+	return &kv.Item{PK: pk, Value: decoded}, nil
 }
 
 // getBatchMaxConcurrency limits concurrent partition requests to avoid throttling.
@@ -224,7 +230,12 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 					return
 				}
 				for _, ent := range entities {
-					fetchedValues[ent.RowKey] = ent.Value
+					decoded, err := s.values.Decode(ent.Value)
+					if err != nil {
+						assignFirstErr(&partMu, &partErr, err)
+						return
+					}
+					fetchedValues[ent.RowKey] = decoded
 				}
 			}
 			for _, rkHex := range chunk {
@@ -255,7 +266,11 @@ func (s *store) getBatchPoint(ctx context.Context, partHex, rkHex string, slots 
 		slog.ErrorContext(ctx, "getBatchPoint decode failed", "table", s.options.Table, "partition_key", partHex, "row_key", rkHex, "err", err)
 		return fmt.Errorf("decode entity: %w", err)
 	}
-	setBatchResults(slots, entity.Value, true, results)
+	decoded, err := s.values.Decode(entity.Value)
+	if err != nil {
+		return err
+	}
+	setBatchResults(slots, decoded, true, results)
 	return nil
 }
 
@@ -378,7 +393,11 @@ func buildPartitionRowKeysFilter(partitionKeyHex string, rowKeyHexes []string) s
 
 func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	storedPK := pkToStore(item.PK)
-	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: item.Value})
+	encoded, err := s.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: encoded})
 	if err != nil {
 		return err
 	}
@@ -396,7 +415,11 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	storedPK := pkToStore(item.PK)
-	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: item.Value})
+	encoded, err := s.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: encoded})
 	if err != nil {
 		return err
 	}
@@ -502,7 +525,7 @@ func (s *store) Enumerate(ctx context.Context, args kv.QueryArgs) enumerators.En
 	}
 	top := normalizeLimit(args.Limit)
 	pager := s.client.NewListEntitiesPager(derefString(filter), "", top)
-	return AzureEnumerator(ctx, pager, args.Limit)
+	return AzureEnumerator(ctx, pager, args.Limit, s.values)
 }
 
 func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
@@ -538,10 +561,14 @@ func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem)
 			storedPK := pkToStore(item.PK)
 			switch item.Op {
 			case kv.Put:
+				encoded, err := s.values.Encode(item.Value)
+				if err != nil {
+					return err
+				}
 				raw, err := json.Marshal(Entity{
 					PartitionKey: storedPK.PartitionKey,
 					RowKey:       storedPK.RowKey,
-					Value:        item.Value,
+					Value:        encoded,
 				})
 				if err != nil {
 					return fmt.Errorf("marshal failed: %w", err)

@@ -32,6 +32,7 @@ The library follows an interface-based design pattern with a core `KV` interface
 - **Query Operators** — `Equal`, `GreaterThan`, `Between`, `StartsWith`, and more
 - **Enumeration** — Memory-efficient iteration over large datasets
 - **Pluggable Backends** — Easy switching between storage systems
+- **Smart Value Compression** — Optional framed compression for large values with transparent reads of legacy raw data
 - **Test-Friendly** — Built-in test utilities and Docker setup
 - **Performance** — Optimized for high-throughput scenarios
 - **Observability** — Built-in OpenTelemetry tracing and metrics for monitoring
@@ -240,6 +241,36 @@ import (
 store, err := pebble.NewPebbleStore(
     "./mydb.pebble",
     pebble.WithTableCacheShards(4),
+)
+```
+
+### Optional Value Compression
+
+Value compression is additive and backend-local: callers still read and write plain `[]byte`, while the backend may store large values in an internal framed compression format.
+
+- Compression is enabled by default for values that meet the compression thresholds.
+- Use `WithoutValueCompression()` when you need raw writes during a staged rollout or compatibility window.
+- Compressed values use an integrity-checked frame before decompression.
+- Upgraded readers can read both legacy raw values and newly compressed values.
+- Older binaries do not understand the framed format, so disable compression explicitly until every reader sharing the store has been upgraded.
+
+```go
+import (
+    "github.com/fgrzl/kv/pkg/storage/pebble"
+    "github.com/fgrzl/kv/pkg/valuecodec"
+)
+
+cfg := valuecodec.DefaultConfig()
+
+store, err := pebble.NewPebbleStore(
+    "./mydb.pebble",
+    pebble.WithTableCacheShards(4),
+    pebble.WithValueCompression(cfg),
+)
+
+rawStore, err := pebble.NewPebbleStore(
+    "./legacy.pebble",
+    pebble.WithoutValueCompression(),
 )
 ```
 

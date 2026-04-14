@@ -2,11 +2,13 @@ package pebble
 
 import (
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 )
 
 // Options is an opaque wrapper around pebble.Options.
 type Options struct {
-	inner *pebble.Options
+	inner      *pebble.Options
+	valueCodec *valuecodec.Codec
 }
 
 // Option defines a functional option for configuring Options.
@@ -14,11 +16,15 @@ type Option func(*Options)
 
 // NewOptions applies functional options and returns a configured pebble.Options.
 func NewOptions(opts ...Option) *pebble.Options {
-	wrapped := &Options{inner: &pebble.Options{}}
+	return newStoreOptions(opts...).inner
+}
+
+func newStoreOptions(opts ...Option) *Options {
+	wrapped := &Options{inner: &pebble.Options{}, valueCodec: valuecodec.New(valuecodec.DefaultConfig())}
 	for _, opt := range opts {
 		opt(wrapped)
 	}
-	return wrapped.inner
+	return wrapped
 }
 
 func WithTableCacheShards(n int) Option {
@@ -73,5 +79,21 @@ func WithBytesPerSync(n int) Option {
 func WithCache(cache *pebble.Cache) Option {
 	return func(o *Options) {
 		o.inner.Cache = cache
+	}
+}
+
+func WithDefaultValueCompression() Option {
+	return WithValueCompression(valuecodec.DefaultConfig())
+}
+
+func WithValueCompression(config valuecodec.Config) Option {
+	return func(o *Options) {
+		o.valueCodec = valuecodec.New(config)
+	}
+}
+
+func WithoutValueCompression() Option {
+	return func(o *Options) {
+		o.valueCodec = valuecodec.New(valuecodec.DisabledConfig())
 	}
 }

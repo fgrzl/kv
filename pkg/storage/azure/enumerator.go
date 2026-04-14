@@ -7,6 +7,7 @@ import (
 	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 )
 
@@ -15,6 +16,7 @@ type azureEnumerator struct {
 	pager  *client.ListEntitiesPager
 	limit  int
 	total  int
+	values *valuecodec.Codec
 	buffer []*kv.Item
 	index  int
 	err    error
@@ -22,11 +24,12 @@ type azureEnumerator struct {
 
 // AzureEnumerator returns an enumerator that pages through list-entity results
 // and maps each entity to a kv.Item. limit caps the total number of items (0 = no cap).
-func AzureEnumerator(ctx context.Context, pager *client.ListEntitiesPager, limit int) enumerators.Enumerator[*kv.Item] {
+func AzureEnumerator(ctx context.Context, pager *client.ListEntitiesPager, limit int, values *valuecodec.Codec) enumerators.Enumerator[*kv.Item] {
 	return &azureEnumerator{
-		ctx:   ctx,
-		pager: pager,
-		limit: limit,
+		ctx:    ctx,
+		pager:  pager,
+		limit:  limit,
+		values: values,
 	}
 }
 
@@ -54,12 +57,17 @@ func (e *azureEnumerator) MoveNext() bool {
 				e.err = fmt.Errorf("failed to decode row key: %w", err)
 				return false
 			}
+			decoded, err := e.values.Decode(ent.Value)
+			if err != nil {
+				e.err = fmt.Errorf("failed to decode value: %w", err)
+				return false
+			}
 			e.buffer = append(e.buffer, &kv.Item{
 				PK: pkFromStore(lexkey.PrimaryKey{
 					PartitionKey: pk,
 					RowKey:       rk,
 				}),
-				Value: ent.Value,
+				Value: decoded,
 			})
 		}
 		e.index = 0

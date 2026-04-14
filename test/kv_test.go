@@ -1,6 +1,7 @@
 package kv_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/fgrzl/kv/pkg/storage/azure"
 	"github.com/fgrzl/kv/pkg/storage/pebble"
 	"github.com/fgrzl/kv/pkg/storage/redis"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -116,6 +118,177 @@ func benchmarkSetup(b *testing.B, provider string) kv.KV {
 	})
 
 	return store
+}
+
+func setupCompressed(t *testing.T, provider string) kv.KV {
+	var store kv.KV
+	var err error
+	config := testValueCompressionConfig()
+
+	switch provider {
+	case "azure":
+		accountName := "devstoreaccount1"
+		accountKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+		endpoint := "http://127.0.0.1:10002/devstoreaccount1"
+
+		credential, err := credentials.NewSharedKeyCredential(accountName, accountKey)
+		if err != nil {
+			panic(err)
+		}
+
+		store, err = azure.NewAzureStore(
+			azure.WithPrefix("test"),
+			azure.WithTable(uuid.NewString()),
+			azure.WithEndpoint(endpoint),
+			azure.WithSharedKey(credential),
+			azure.WithValueCompression(config),
+		)
+		require.NoError(t, err)
+
+	case "pebble":
+		tempDir := t.TempDir()
+		dbPath := filepath.Join(tempDir, fmt.Sprintf("db_%v.pebble", uuid.NewString()))
+		store, err = pebble.NewPebbleStore(dbPath, pebble.WithTableCacheShards(1), pebble.WithValueCompression(config))
+		require.NoError(t, err)
+
+	case "redis":
+		store, err = redis.NewRedisStore(
+			redis.WithAddress("127.0.0.1:6379"),
+			redis.WithDatabase(0),
+			redis.WithValueCompression(config),
+		)
+		require.NoError(t, err)
+		store.(*redis.Store).Clear()
+	}
+
+	t.Cleanup(func() {
+		store.Close()
+	})
+
+	var batch []*kv.BatchItem
+	for _, item := range sampleData {
+		batch = append(batch, &kv.BatchItem{Op: kv.Put, PK: item.PK, Value: item.Value})
+	}
+	err = store.Batch(t.Context(), batch)
+	require.NoError(t, err)
+
+	return store
+}
+
+func putItems(t *testing.T, store kv.KV, items []*kv.Item) {
+	t.Helper()
+
+	batch := make([]*kv.BatchItem, 0, len(items))
+	for _, item := range items {
+		batch = append(batch, &kv.BatchItem{Op: kv.Put, PK: item.PK, Value: item.Value})
+	}
+	require.NoError(t, store.Batch(t.Context(), batch))
+}
+
+func newAzureCompressionTestStore(t *testing.T, table string, config *valuecodec.Config) kv.KV {
+	t.Helper()
+
+	accountName := "devstoreaccount1"
+	accountKey := "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+	endpoint := "http://127.0.0.1:10002/devstoreaccount1"
+
+	credential, err := credentials.NewSharedKeyCredential(accountName, accountKey)
+	require.NoError(t, err)
+
+	options := []azure.StoreOption{
+		azure.WithPrefix("test"),
+		azure.WithTable(table),
+		azure.WithEndpoint(endpoint),
+		azure.WithSharedKey(credential),
+	}
+	if config != nil {
+		options = append(options, azure.WithValueCompression(*config))
+	}
+
+	store, err := azure.NewAzureStore(options...)
+	require.NoError(t, err)
+	return store
+}
+
+func newPebbleCompressionTestStore(t *testing.T, path string, config *valuecodec.Config) kv.KV {
+	t.Helper()
+
+	options := []pebble.Option{pebble.WithTableCacheShards(1)}
+	if config != nil {
+		options = append(options, pebble.WithValueCompression(*config))
+	}
+
+	store, err := pebble.NewPebbleStore(path, options...)
+	require.NoError(t, err)
+	return store
+}
+
+func newRedisCompressionTestStore(t *testing.T, prefix string, config *valuecodec.Config) kv.KV {
+	t.Helper()
+
+	options := []redis.Option{
+		redis.WithAddress("127.0.0.1:6379"),
+		redis.WithDatabase(0),
+		redis.WithPrefix(prefix),
+	}
+	if config != nil {
+		options = append(options, redis.WithValueCompression(*config))
+	}
+
+	store, err := redis.NewRedisStore(options...)
+	require.NoError(t, err)
+	return store
+}
+
+func setupMixedCompression(t *testing.T, provider string) (kv.KV, []*kv.Item) {
+	t.Helper()
+
+	config := testValueCompressionConfig()
+	partition := lexkey.Encode("mixed-compression")
+	legacyItems := []*kv.Item{
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: []byte("legacy-a")},
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: []byte("legacy-b")},
+	}
+	compressedItems := []*kv.Item{
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("compressed-c-"), 64)},
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("d")), Value: bytes.Repeat([]byte("compressed-d-"), 64)},
+	}
+	expected := append(append([]*kv.Item{}, legacyItems...), compressedItems...)
+
+	var store kv.KV
+
+	switch provider {
+	case "azure":
+		table := uuid.NewString()
+		legacyStore := newAzureCompressionTestStore(t, table, nil)
+		putItems(t, legacyStore, legacyItems)
+		require.NoError(t, legacyStore.Close())
+
+		store = newAzureCompressionTestStore(t, table, &config)
+	case "pebble":
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("db_%v.pebble", uuid.NewString()))
+		legacyStore := newPebbleCompressionTestStore(t, path, nil)
+		putItems(t, legacyStore, legacyItems)
+		require.NoError(t, legacyStore.Close())
+
+		store = newPebbleCompressionTestStore(t, path, &config)
+	case "redis":
+		prefix := fmt.Sprintf("mixed-%s", uuid.NewString())
+		legacyStore := newRedisCompressionTestStore(t, prefix, nil)
+		putItems(t, legacyStore, legacyItems)
+		require.NoError(t, legacyStore.Close())
+
+		store = newRedisCompressionTestStore(t, prefix, &config)
+	default:
+		t.Fatalf("unsupported provider: %s", provider)
+	}
+
+	putItems(t, store, compressedItems)
+	t.Cleanup(func() {
+		store.Close()
+	})
+
+	return store, expected
 }
 
 func TestPut(t *testing.T) {
@@ -258,6 +431,122 @@ func TestQueryLessThan(t *testing.T) {
 			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
 		})
 	}
+}
+
+func TestQueryShouldDecodeCompressedValues(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setupCompressed(t, provider)
+			partition := lexkey.Encode("compressed-query")
+			items := []*kv.Item{
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: bytes.Repeat([]byte("value-a-"), 64)},
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: bytes.Repeat([]byte("value-b-"), 64)},
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("value-c-"), 64)},
+			}
+			for _, item := range items {
+				err := db.Put(t.Context(), item)
+				require.NoError(t, err)
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: partition, Operator: kv.Scan}, kv.Ascending)
+
+			// Assert
+			require.NoError(t, err)
+			require.Len(t, results, len(items))
+			for i, item := range items {
+				assert.Equal(t, item.PK, results[i].PK)
+				assert.Equal(t, item.Value, results[i].Value)
+			}
+		})
+	}
+}
+
+func TestQueryShouldDecodeCompressedValuesByDefault(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db := setup(t, provider)
+			partition := lexkey.Encode("default-compressed-query")
+			items := []*kv.Item{
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: bytes.Repeat([]byte("value-a-"), 64)},
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: bytes.Repeat([]byte("value-b-"), 64)},
+				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("value-c-"), 64)},
+			}
+			for _, item := range items {
+				err := db.Put(t.Context(), item)
+				require.NoError(t, err)
+			}
+
+			// Act
+			results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: partition, Operator: kv.Scan}, kv.Ascending)
+
+			// Assert
+			require.NoError(t, err)
+			require.Len(t, results, len(items))
+			for i, item := range items {
+				assert.Equal(t, item.PK, results[i].PK)
+				assert.Equal(t, item.Value, results[i].Value)
+			}
+		})
+	}
+}
+
+func TestQueryShouldDecodeMixedRawAndCompressedValues(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db, expected := setupMixedCompression(t, provider)
+
+			// Act
+			results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: expected[0].PK.PartitionKey, Operator: kv.Scan}, kv.Ascending)
+
+			// Assert
+			require.NoError(t, err)
+			require.Len(t, results, len(expected))
+			for i, item := range expected {
+				assert.Equal(t, item.PK, results[i].PK)
+				assert.Equal(t, item.Value, results[i].Value)
+			}
+		})
+	}
+}
+
+func TestGetBatchShouldDecodeMixedRawAndCompressedValues(t *testing.T) {
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			// Arrange
+			db, expected := setupMixedCompression(t, provider)
+			keys := []lexkey.PrimaryKey{expected[1].PK, expected[3].PK, expected[0].PK, expected[2].PK}
+			expectedByKey := make(map[string]*kv.Item, len(expected))
+			for _, item := range expected {
+				expectedByKey[string(item.PK.Encode())] = item
+			}
+
+			// Act
+			results, err := db.GetBatch(t.Context(), keys...)
+
+			// Assert
+			require.NoError(t, err)
+			require.Len(t, results, len(keys))
+			for i, key := range keys {
+				require.True(t, results[i].Found)
+				require.NotNil(t, results[i].Item)
+				expectedItem := expectedByKey[string(key.Encode())]
+				assert.Equal(t, expectedItem.PK, results[i].Item.PK)
+				assert.Equal(t, expectedItem.Value, results[i].Item.Value)
+			}
+		})
+	}
+}
+
+func testValueCompressionConfig() valuecodec.Config {
+	config := valuecodec.DefaultConfig()
+	config.MinInputSize = 1
+	config.MinSavingsBytes = 1
+	config.MaxEncodedRatio = 0.99
+	return config
 }
 
 func TestQueryLessThanOrEqual(t *testing.T) {

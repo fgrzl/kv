@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	client "github.com/fgrzl/azkit/tables"
 	"github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 	"github.com/stretchr/testify/assert"
 )
@@ -314,4 +316,103 @@ func TestBatchShouldChunkEachPartitionIndependently(t *testing.T) {
 	sizes := append([]int(nil), mockClient.submitBatchSizes...)
 	sort.Ints(sizes)
 	assert.Equal(t, []int{20, 30, 100, 100}, sizes)
+}
+
+func TestShouldReadLegacyRawValueWhenCompressionEnabledInAzureStore(t *testing.T) {
+	mockClient := newMockTableClient()
+	store, err := NewAzureStoreWithClient(mockClient, WithValueCompression(testValueCompressionConfig()))
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("legacy"))
+	value := []byte("legacy raw value")
+	storedPK := pkToStore(pk)
+	entityJSON, err := json.Marshal(Entity{PartitionKey: storedPK.PartitionKey, RowKey: storedPK.RowKey, Value: value})
+	assert.NoError(t, err)
+	mockClient.data[storedPK.PartitionKey.ToHexString()+":"+storedPK.RowKey.ToHexString()] = entityJSON
+
+	item, err := store.Get(context.Background(), pk)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, item)
+	assert.Equal(t, value, item.Value)
+}
+
+func TestShouldCompressValuesWhenConfiguredInAzureStore(t *testing.T) {
+	mockClient := newMockTableClient()
+	store, err := NewAzureStoreWithClient(mockClient, WithValueCompression(testValueCompressionConfig()))
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+	item := &kv.Item{PK: pk, Value: value}
+
+	err = store.Put(context.Background(), item)
+	assert.NoError(t, err)
+
+	assert.Len(t, mockClient.data, 1)
+	for _, raw := range mockClient.data {
+		var entity Entity
+		err = json.Unmarshal(raw, &entity)
+		assert.NoError(t, err)
+		assert.True(t, valuecodec.IsCompressed(entity.Value))
+	}
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldCompressLargeValuesByDefaultInAzureStore(t *testing.T) {
+	mockClient := newMockTableClient()
+	store, err := NewAzureStoreWithClient(mockClient)
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("default-compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	err = store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+	assert.NoError(t, err)
+
+	assert.Len(t, mockClient.data, 1)
+	for _, raw := range mockClient.data {
+		var entity Entity
+		err = json.Unmarshal(raw, &entity)
+		assert.NoError(t, err)
+		assert.True(t, valuecodec.IsCompressed(entity.Value))
+	}
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldKeepValuesRawWhenCompressionDisabledInAzureStore(t *testing.T) {
+	mockClient := newMockTableClient()
+	store, err := NewAzureStoreWithClient(mockClient, WithoutValueCompression())
+	assert.NoError(t, err)
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("disabled"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	err = store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+	assert.NoError(t, err)
+
+	assert.Len(t, mockClient.data, 1)
+	for _, raw := range mockClient.data {
+		var entity Entity
+		err = json.Unmarshal(raw, &entity)
+		assert.NoError(t, err)
+		assert.False(t, valuecodec.IsCompressed(entity.Value))
+		assert.Equal(t, value, entity.Value)
+	}
+}
+
+func testValueCompressionConfig() valuecodec.Config {
+	config := valuecodec.DefaultConfig()
+	config.MinInputSize = 1
+	config.MinSavingsBytes = 1
+	config.MaxEncodedRatio = 0.99
+	return config
 }

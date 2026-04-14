@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/fgrzl/azkit/credentials"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 )
 
 // TableProviderOptions holds configuration options for Azure Storage Tables.
@@ -16,6 +17,7 @@ type TableProviderOptions struct {
 	SharedKeyCredential       *credentials.SharedKeyCredential
 	ManagedIdentityCredential *credentials.ManagedIdentityCredential
 	HTTPClient                *http.Client
+	ValueCodec                *valuecodec.Codec
 }
 
 // StoreOption configures a TableProviderOptions.
@@ -61,5 +63,21 @@ func WithManagedIdentity(cred *credentials.ManagedIdentityCredential) StoreOptio
 func WithHTTPClient(client *http.Client) StoreOption {
 	return func(o *TableProviderOptions) {
 		o.HTTPClient = client
+	}
+}
+
+func WithDefaultValueCompression() StoreOption {
+	return WithValueCompression(valuecodec.DefaultConfig())
+}
+
+func WithValueCompression(config valuecodec.Config) StoreOption {
+	return func(o *TableProviderOptions) {
+		o.ValueCodec = valuecodec.New(config)
+	}
+}
+
+func WithoutValueCompression() StoreOption {
+	return func(o *TableProviderOptions) {
+		o.ValueCodec = valuecodec.New(valuecodec.DisabledConfig())
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/fgrzl/enumerators"
 	kv "github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 )
 
@@ -36,28 +37,30 @@ type PebbleBatch interface {
 
 type store struct {
 	db       PebbleDB
+	values   *valuecodec.Codec
 	disposed sync.Once
+}
+
+func newPebbleStoreWithOptions(db PebbleDB, options *Options) kv.KV {
+	return &store{db: db, values: options.valueCodec}
 }
 
 // NewPebbleStore creates a new Pebble-backed kv.KV store.
 func NewPebbleStore(path string, opts ...Option) (kv.KV, error) {
-	options := NewOptions(opts...) // returns *pebble.Options
-	db, err := pebble.Open(path, options)
+	options := newStoreOptions(opts...)
+	db, err := pebble.Open(path, options.inner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open pebble database: %w", err)
 	}
-	store, err := NewPebbleStoreWithDB(db)
-	if err != nil {
-		return nil, err
-	}
+	store := newPebbleStoreWithOptions(db, options)
 	slog.DebugContext(context.Background(), "Pebble store initialized", "path", path)
 	return store, nil
 }
 
 // NewPebbleStoreWithDB creates a new Pebble-backed kv.KV store with a provided database.
 // This is primarily for testing purposes.
-func NewPebbleStoreWithDB(db PebbleDB) (kv.KV, error) {
-	return &store{db: db}, nil
+func NewPebbleStoreWithDB(db PebbleDB, opts ...Option) (kv.KV, error) {
+	return newPebbleStoreWithOptions(db, newStoreOptions(opts...)), nil
 }
 
 // Get returns a single item by primary key, or nil if not found.
@@ -70,7 +73,11 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		return nil, err
 	}
 	defer closer.Close()
-	return &kv.Item{PK: pk, Value: append([]byte{}, value...)}, nil
+	decoded, err := s.values.Decode(value)
+	if err != nil {
+		return nil, err
+	}
+	return &kv.Item{PK: pk, Value: append([]byte{}, decoded...)}, nil
 }
 
 // GetBatch returns one result per requested key, in order, with Found set per key.
@@ -86,10 +93,17 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 				results[i] = kv.BatchGetResult{Item: nil, Found: false}
 				continue
 			}
+			if closer != nil {
+				closer.Close()
+			}
+			return nil, err
+		}
+		decoded, err := s.values.Decode(value)
+		if err != nil {
 			closer.Close()
 			return nil, err
 		}
-		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: pk, Value: append([]byte{}, value...)}, Found: true}
+		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: pk, Value: append([]byte{}, decoded...)}, Found: true}
 		closer.Close()
 	}
 	return results, nil
@@ -128,12 +142,20 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	if !errors.Is(err, pebble.ErrNotFound) {
 		return fmt.Errorf("insert check failed: %w", err)
 	}
-	return s.db.Set(key, item.Value, pebble.Sync)
+	encoded, err := s.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	return s.db.Set(key, encoded, pebble.Sync)
 }
 
 // Put stores an item, replacing any existing value.
 func (s *store) Put(ctx context.Context, item *kv.Item) error {
-	return s.db.Set(item.PK.Encode(), item.Value, pebble.Sync)
+	encoded, err := s.values.Encode(item.Value)
+	if err != nil {
+		return err
+	}
+	return s.db.Set(item.PK.Encode(), encoded, pebble.Sync)
 }
 
 // Remove deletes an item by primary key.
@@ -175,7 +197,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
 	for _, item := range items {
-		if err := applyBatchOp(batch, item); err != nil {
+		if err := s.applyBatchOp(batch, item); err != nil {
 			return fmt.Errorf("batch operation failed for key %v: %w", item.PK, err)
 		}
 	}
@@ -189,7 +211,7 @@ func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*k
 		batch := s.db.NewBatch()
 		defer batch.Close()
 		err := enumerators.ForEach(chunk, func(item *kv.BatchItem) error {
-			return applyBatchOp(batch, item)
+			return s.applyBatchOp(batch, item)
 		})
 		if err != nil {
 			return err
@@ -250,26 +272,34 @@ func (s *store) enumerateRange(ctx context.Context, args kv.QueryArgs) enumerato
 			if args.Limit > 0 && counter >= args.Limit {
 				return nil, false, nil
 			}
-			pk, err := lexkey.DecodePrimaryKey(iter.Key())
+			pk, err := lexkey.DecodePrimaryKey(kvp.Key)
 			if err != nil {
 				return nil, false, err
 			}
 			if !satisfies(pk, rangeKey) {
 				return nil, false, nil
 			}
+			decoded, err := s.values.Decode(kvp.Value)
+			if err != nil {
+				return nil, false, err
+			}
 			counter++
-			return &kv.Item{PK: pk, Value: append([]byte{}, iter.Value()...)}, true, nil
+			return &kv.Item{PK: pk, Value: decoded}, true, nil
 		},
 	)
 }
 
-func applyBatchOp(batch PebbleBatch, item *kv.BatchItem) error {
+func (s *store) applyBatchOp(batch PebbleBatch, item *kv.BatchItem) error {
 	key := item.PK.Encode()
 	switch item.Op {
 	case kv.NoOp:
 		return nil
 	case kv.Put:
-		return batch.Set(key, item.Value, nil)
+		encoded, err := s.values.Encode(item.Value)
+		if err != nil {
+			return err
+		}
+		return batch.Set(key, encoded, nil)
 	case kv.Delete:
 		return batch.Delete(key, nil)
 	default:

@@ -1,11 +1,13 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
 
 	"github.com/fgrzl/kv"
+	"github.com/fgrzl/kv/pkg/valuecodec"
 	"github.com/fgrzl/lexkey"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -221,4 +223,93 @@ func TestShouldRemoveItemFromRedisStore(t *testing.T) {
 	retrieved, err := store.Get(context.Background(), pk)
 	assert.NoError(t, err)
 	assert.Nil(t, retrieved)
+}
+
+func TestShouldReadLegacyRawValueWhenCompressionEnabledInRedisStore(t *testing.T) {
+	// Arrange
+	mockClient := newMockRedisClient()
+	store := NewRedisStoreWithClient(mockClient, "", WithValueCompression(testValueCompressionConfig()))
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("legacy"))
+	value := []byte("legacy raw value")
+	mockClient.data[pk.Encode().ToHexString()] = value
+
+	// Act
+	item, err := store.Get(context.Background(), pk)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, item)
+	assert.Equal(t, value, item.Value)
+}
+
+func TestShouldCompressValuesWhenConfiguredInRedisStore(t *testing.T) {
+	// Arrange
+	mockClient := newMockRedisClient()
+	store := NewRedisStoreWithClient(mockClient, "", WithValueCompression(testValueCompressionConfig()))
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+	item := &kv.Item{PK: pk, Value: value}
+
+	// Act
+	err := store.Put(context.Background(), item)
+
+	// Assert
+	assert.NoError(t, err)
+	stored := mockClient.data[pk.Encode().ToHexString()]
+	assert.True(t, valuecodec.IsCompressed(stored))
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldCompressLargeValuesByDefaultInRedisStore(t *testing.T) {
+	// Arrange
+	mockClient := newMockRedisClient()
+	store := NewRedisStoreWithClient(mockClient, "")
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("default-compressed"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	// Act
+	err := store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+
+	// Assert
+	assert.NoError(t, err)
+	stored := mockClient.data[pk.Encode().ToHexString()]
+	assert.True(t, valuecodec.IsCompressed(stored))
+
+	retrieved, err := store.Get(context.Background(), pk)
+	assert.NoError(t, err)
+	assert.NotNil(t, retrieved)
+	assert.Equal(t, value, retrieved.Value)
+}
+
+func TestShouldKeepValuesRawWhenCompressionDisabledInRedisStore(t *testing.T) {
+	// Arrange
+	mockClient := newMockRedisClient()
+	store := NewRedisStoreWithClient(mockClient, "", WithoutValueCompression())
+
+	pk := lexkey.NewPrimaryKey(lexkey.Encode("partition"), lexkey.Encode("disabled"))
+	value := bytes.Repeat([]byte("compressible-value-"), 64)
+
+	// Act
+	err := store.Put(context.Background(), &kv.Item{PK: pk, Value: value})
+
+	// Assert
+	assert.NoError(t, err)
+	stored := mockClient.data[pk.Encode().ToHexString()]
+	assert.False(t, valuecodec.IsCompressed(stored))
+	assert.Equal(t, value, stored)
+}
+
+func testValueCompressionConfig() valuecodec.Config {
+	config := valuecodec.DefaultConfig()
+	config.MinInputSize = 1
+	config.MinSavingsBytes = 1
+	config.MaxEncodedRatio = 0.99
+	return config
 }

@@ -15,12 +15,16 @@ import (
 )
 
 // Item represents a key-value pair stored in the KV store.
+// Value is always returned to callers as the original opaque bytes supplied by
+// the application, even when a backend stores it using an internal framed
+// compression format.
 type Item struct {
 	PK    lexkey.PrimaryKey
 	Value []byte
 }
 
 // BatchItem represents an operation to perform in a batch.
+// Value follows the same opaque-bytes contract as Item.Value.
 type BatchItem struct {
 	Op    BatchOp
 	PK    lexkey.PrimaryKey
