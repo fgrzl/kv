@@ -132,6 +132,54 @@ func BenchmarkAddLeaf(b *testing.B) {
 	}
 }
 
+// BenchmarkAddLeafStableHeight measures the common append path where tree height does not change.
+// This isolates the hot O(log N) recomputation path from the rare full-rebuild case.
+func BenchmarkAddLeafStableHeight(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 1_000
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stage := fmt.Sprintf("stable-stage-%d", i)
+
+		b.StopTimer()
+		if err := m.Build(ctx, stage, "bench", benchLeaves(leafCount)); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+
+		if _, err := m.AddLeaf(ctx, stage, "bench", leaf(fmt.Sprintf("stable-new-%d", i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkAddLeafHeightGrowth measures the rare append path where adding a leaf grows tree height.
+// For branching=2, appending to 1024 leaves forces the next level to be created.
+func BenchmarkAddLeafHeightGrowth(b *testing.B) {
+	m := setupBenchMerkle(b)
+	ctx := context.Background()
+
+	const leafCount = 1_024
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stage := fmt.Sprintf("growth-stage-%d", i)
+
+		b.StopTimer()
+		if err := m.Build(ctx, stage, "bench", benchLeaves(leafCount)); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+
+		if _, err := m.AddLeaf(ctx, stage, "bench", leaf(fmt.Sprintf("growth-new-%d", i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkRemoveLeaf measures soft delete performance.
 // Verifies that delete marker behavior has no reindexing cost.
 func BenchmarkRemoveLeaf(b *testing.B) {

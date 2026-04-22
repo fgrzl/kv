@@ -135,10 +135,11 @@ type Tree struct {
 	store     kv.KV
 	branching int
 	batchSize int
-	// childBuf is reused across calls to getChildHashes to eliminate repeated allocations.
+	// childBuf and childPKBuf are reused across calls to getChildHashes to eliminate repeated allocations.
 	// CONCURRENCY: SAFE because Tree assumes single-writer model (documented above).
 	// NOT safe for concurrent use - requires external synchronization if needed.
-	childBuf [][]byte
+	childBuf   [][]byte
+	childPKBuf []lexkey.PrimaryKey
 }
 
 type NodePosition struct {
@@ -206,6 +207,7 @@ func NewTree(store kv.KV, opts ...Option) *Tree {
 	}
 	// Pre-allocate reusable buffer
 	m.childBuf = make([][]byte, 0, m.branching)
+	m.childPKBuf = make([]lexkey.PrimaryKey, 0, m.branching)
 	return m
 }
 
@@ -922,20 +924,11 @@ func (m *Tree) getHash(ctx context.Context, stage, space string, ref NodePositio
 	if item == nil {
 		return nil, nil, nil
 	}
-	if ref.Level == 0 {
-		// Use pooled Leaf to reduce allocations
-		leaf := leafPool.Get().(*Leaf)
-		defer func() {
-			// Clear the Leaf before returning to pool
-			*leaf = Leaf{}
-			leafPool.Put(leaf)
-		}()
-		if err := json.Unmarshal(item.Value, leaf); err != nil {
-			return nil, nil, fmt.Errorf("unmarshal leaf: %w", err)
-		}
-		return leaf.Hash, item.Value, nil
+	hash, err := m.hashFromStoredValue(ref.Level, item.Value)
+	if err != nil {
+		return nil, nil, err
 	}
-	return item.Value, item.Value, nil
+	return hash, item.Value, nil
 }
 
 // validateStageSpace validates that stage and space are non-empty.
@@ -997,6 +990,11 @@ func (m *Tree) recomputePathToRoot(ctx context.Context, stage, space string, lea
 	if err != nil {
 		return fmt.Errorf("get leaf count in recomputePathToRoot: %w", err)
 	}
+
+	return m.recomputePathToRootWithLeafCount(ctx, stage, space, leafIndex, leafCount)
+}
+
+func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, space string, leafIndex, leafCount int) error {
 	if leafIndex >= leafCount {
 		return fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
 	}
@@ -1004,6 +1002,7 @@ func (m *Tree) recomputePathToRoot(ctx context.Context, stage, space string, lea
 	// Calculate max level from current tree structure
 	paddedLeafCount := m.getPaddedCount(leafCount)
 	maxLevel := m.calculateMaxLevel(paddedLeafCount)
+	var rootHash []byte
 
 	// Recompute from leaf's parent up to root (O(log N) operations)
 	currentIndex := leafIndex
@@ -1024,15 +1023,31 @@ func (m *Tree) recomputePathToRoot(ctx context.Context, stage, space string, lea
 		if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: parentHash}); err != nil {
 			return err
 		}
+		if level == maxLevel {
+			rootHash = parentHash
+		}
 
 		currentIndex = parentIndex
 	}
 
-	// Update root hash and persist max level metadata
-	if err := m.updateRootHash(ctx, stage, space, maxLevel); err != nil {
-		return fmt.Errorf("update root hash in recomputePathToRoot: %w", err)
+	if maxLevel == 0 {
+		var err error
+		rootHash, _, err = m.getHash(ctx, stage, space, NodePosition{Level: 0, Index: 0})
+		if err != nil {
+			return fmt.Errorf("get root hash for single-leaf tree: %w", err)
+		}
 	}
-	return m.setMaxLevelMetadata(ctx, stage, space, maxLevel)
+
+	if rootHash == nil {
+		return fmt.Errorf("%w: root hash is nil at level %d for %s/%s", errInvalidTreeState, maxLevel, stage, space)
+	}
+
+	pkVal := pk(stage, space, rootKey, "")
+	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: rootHash}); err != nil {
+		return fmt.Errorf("store root hash for %s/%s: %w", stage, space, err)
+	}
+
+	return nil
 }
 
 // getChildHashes retrieves all child hashes for a given parent node.
@@ -1040,10 +1055,24 @@ func (m *Tree) recomputePathToRoot(ctx context.Context, stage, space string, lea
 func (m *Tree) getChildHashes(ctx context.Context, stage, space string, level, parentIndex int) ([][]byte, error) {
 	// Reuse childBuf to avoid allocation on every call
 	m.childBuf = m.childBuf[:0]
+	m.childPKBuf = m.childPKBuf[:0]
 
 	for i := 0; i < m.branching; i++ {
 		childIndex := parentIndex*m.branching + i
-		childHash, _, err := m.getHash(ctx, stage, space, NodePosition{Level: level, Index: childIndex})
+		m.childPKBuf = append(m.childPKBuf, pk(stage, space, level, childIndex))
+	}
+
+	results, err := m.store.GetBatch(ctx, m.childPKBuf...)
+	if err != nil {
+		return nil, fmt.Errorf("store get batch: %w", err)
+	}
+
+	for _, result := range results {
+		if !result.Found || result.Item == nil {
+			continue
+		}
+
+		childHash, err := m.hashFromStoredValue(level, result.Item.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -1053,6 +1082,25 @@ func (m *Tree) getChildHashes(ctx context.Context, stage, space string, level, p
 	}
 
 	return m.childBuf, nil
+}
+
+func (m *Tree) hashFromStoredValue(level int, value []byte) ([]byte, error) {
+	if level != 0 {
+		return value, nil
+	}
+
+	// Use pooled Leaf to reduce allocations when decoding leaf payloads.
+	leaf := leafPool.Get().(*Leaf)
+	defer func() {
+		*leaf = Leaf{}
+		leafPool.Put(leaf)
+	}()
+
+	if err := json.Unmarshal(value, leaf); err != nil {
+		return nil, fmt.Errorf("unmarshal leaf: %w", err)
+	}
+
+	return leaf.Hash, nil
 }
 
 // updateRootHash updates the root hash from the topmost internal node.
@@ -1155,7 +1203,7 @@ func (m *Tree) recomputeAffectedNodes(ctx context.Context, stage, space string, 
 	}
 
 	// Otherwise just update the path from the new leaf
-	return m.recomputePathToRoot(ctx, stage, space, oldCount)
+	return m.recomputePathToRootWithLeafCount(ctx, stage, space, oldCount, newCount)
 }
 
 // recomputeAllInternalNodes rebuilds all internal nodes from current leaves.
@@ -1206,6 +1254,7 @@ func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space strin
 		}
 
 		nodesAtThisLevel := (nodesAtPrevLevel + m.branching - 1) / m.branching
+		batch := make([]*kv.BatchItem, 0, nodesAtThisLevel)
 
 		for parentIdx := 0; parentIdx < nodesAtThisLevel; parentIdx++ {
 			childHashes, err := m.getChildHashes(ctx, stage, space, level-1, parentIdx)
@@ -1216,10 +1265,12 @@ func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space strin
 			if len(childHashes) > 0 {
 				parentHash := hashByteSlices(childHashes)
 				pkVal := pk(stage, space, level, parentIdx)
-				if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: parentHash}); err != nil {
-					return err
-				}
+				batch = append(batch, &kv.BatchItem{PK: pkVal, Value: parentHash, Op: kv.Put})
 			}
+		}
+
+		if err := m.commitBatchIfNeeded(ctx, batch); err != nil {
+			return err
 		}
 	}
 
