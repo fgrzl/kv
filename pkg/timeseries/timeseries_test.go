@@ -71,6 +71,44 @@ func TestShouldDeleteSeries(t *testing.T) {
 	assert.Len(t, items, 0)
 }
 
+func TestShouldPruneRange(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	require.NoError(t, ts.Append(ctx, "s3", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "s3", 20, "a", []byte("twenty-a")))
+	require.NoError(t, ts.Append(ctx, "s3", 20, "b", []byte("twenty-b")))
+	require.NoError(t, ts.Append(ctx, "s3", 30, "", []byte("thirty")))
+
+	// Act
+	require.NoError(t, ts.PruneRange(ctx, "s3", 10, 30))
+	out, err := ts.QueryRange(ctx, "s3", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, int64(30), out[0].Timestamp)
+	assert.Equal(t, []byte("thirty"), out[0].Value)
+}
+
+func TestShouldPruneRangeOnDescendingSeries(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTSDescending(t)
+	require.NoError(t, ts.Append(ctx, "sd-prune", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "sd-prune", 20, "", []byte("twenty")))
+	require.NoError(t, ts.Append(ctx, "sd-prune", 30, "", []byte("thirty")))
+
+	// Act
+	require.NoError(t, ts.PruneRange(ctx, "sd-prune", 0, 20))
+	out, err := ts.QueryRange(ctx, "sd-prune", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, []int64{30, 20}, []int64{out[0].Timestamp, out[1].Timestamp})
+}
+
 func TestShouldEnumerateRangeStream(t *testing.T) {
 	// Arrange
 	ctx := context.Background()

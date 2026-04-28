@@ -26,6 +26,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 
@@ -131,4 +132,26 @@ func (ts *TimeSeries) DeleteSeries(ctx context.Context, series string) error {
 		return err
 	}
 	return nil
+}
+
+// PruneRange removes samples for series within [from, to) using the same
+// timestamp semantics as QueryRange. This is the building block for TTL-style
+// retention jobs: call it with your retention cutoff to delete expired data
+// without scanning or materializing the whole series in memory.
+func (ts *TimeSeries) PruneRange(ctx context.Context, series string, from, to int64) error {
+	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	if !ok {
+		return nil
+	}
+	rangeKey := lexkey.NewRangeKey(ts.partition(series), startRK, endRK)
+	if err := ts.store.RemoveRange(ctx, rangeKey); err != nil {
+		slog.ErrorContext(ctx, "failed to prune timeseries range", "series", series, "from", from, "to", to, "err", err)
+		return err
+	}
+	return nil
+}
+
+// PruneRangeTime is the time.Time variant of PruneRange (UnixNano).
+func (ts *TimeSeries) PruneRangeTime(ctx context.Context, series string, from, to time.Time) error {
+	return ts.PruneRange(ctx, series, from.UnixNano(), to.UnixNano())
 }
