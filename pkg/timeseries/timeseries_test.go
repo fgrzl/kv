@@ -109,6 +109,137 @@ func TestShouldPruneRangeOnDescendingSeries(t *testing.T) {
 	assert.Equal(t, []int64{30, 20}, []int64{out[0].Timestamp, out[1].Timestamp})
 }
 
+func TestShouldPruneBeforeExcludingCutoff(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	require.NoError(t, ts.Append(ctx, "s-before", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "s-before", 20, "a", []byte("twenty-a")))
+	require.NoError(t, ts.Append(ctx, "s-before", 20, "b", []byte("twenty-b")))
+	require.NoError(t, ts.Append(ctx, "s-before", 30, "", []byte("thirty")))
+
+	// Act
+	require.NoError(t, ts.PruneBefore(ctx, "s-before", 20))
+	out, err := ts.QueryRange(ctx, "s-before", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+	assert.Equal(t, []int64{20, 20, 30}, []int64{out[0].Timestamp, out[1].Timestamp, out[2].Timestamp})
+}
+
+func TestShouldPruneBeforeOnDescendingSeries(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTSDescending(t)
+	require.NoError(t, ts.Append(ctx, "sd-before", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "sd-before", 20, "", []byte("twenty")))
+	require.NoError(t, ts.Append(ctx, "sd-before", 30, "", []byte("thirty")))
+
+	// Act
+	require.NoError(t, ts.PruneBefore(ctx, "sd-before", 30))
+	out, err := ts.QueryRange(ctx, "sd-before", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, int64(30), out[0].Timestamp)
+}
+
+func TestShouldPruneOldestTimestampOnDescendingSeries(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTSDescending(t)
+	require.NoError(t, ts.Append(ctx, "sd-min", math.MinInt64, "", []byte("min")))
+	require.NoError(t, ts.Append(ctx, "sd-min", math.MinInt64+1, "", []byte("min-plus-one")))
+
+	// Act
+	require.NoError(t, ts.PruneBefore(ctx, "sd-min", math.MinInt64+1))
+	out, err := ts.QueryRange(ctx, "sd-min", math.MinInt64, math.MinInt64+2)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, int64(math.MinInt64+1), out[0].Timestamp)
+	assert.Equal(t, []byte("min-plus-one"), out[0].Value)
+}
+
+func TestShouldNotPruneWhenRangeIsEmpty(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	require.NoError(t, ts.Append(ctx, "s-empty", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "s-empty", 20, "", []byte("twenty")))
+
+	// Act
+	require.NoError(t, ts.PruneRange(ctx, "s-empty", 20, 20))
+	require.NoError(t, ts.PruneRange(ctx, "s-empty", 30, 20))
+	out, err := ts.QueryRange(ctx, "s-empty", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, []int64{10, 20}, []int64{out[0].Timestamp, out[1].Timestamp})
+}
+
+func TestShouldPreserveUpperBoundTimestampAndIDsWhenPruning(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	require.NoError(t, ts.Append(ctx, "s-upper", 10, "", []byte("ten")))
+	require.NoError(t, ts.Append(ctx, "s-upper", 20, "a", []byte("twenty-a")))
+	require.NoError(t, ts.Append(ctx, "s-upper", 20, "b", []byte("twenty-b")))
+	require.NoError(t, ts.Append(ctx, "s-upper", 30, "", []byte("thirty")))
+
+	// Act
+	require.NoError(t, ts.PruneRange(ctx, "s-upper", 10, 20))
+	out, err := ts.QueryRange(ctx, "s-upper", 0, 100)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+	assert.Equal(t, []int64{20, 20, 30}, []int64{out[0].Timestamp, out[1].Timestamp, out[2].Timestamp})
+	assert.Equal(t, []string{"a", "b", ""}, []string{out[0].ID, out[1].ID, out[2].ID})
+}
+
+func TestShouldPreserveMaxTimestampWhenPruningBeforeMax(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTS(t)
+	require.NoError(t, ts.Append(ctx, "s-max", math.MaxInt64-1, "", []byte("max-minus-one")))
+	require.NoError(t, ts.Append(ctx, "s-max", math.MaxInt64, "", []byte("max")))
+
+	// Act
+	require.NoError(t, ts.PruneBefore(ctx, "s-max", math.MaxInt64))
+	out, err := ts.QueryRange(ctx, "s-max", math.MaxInt64-1, math.MaxInt64)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Empty(t, out)
+
+	item, err := ts.store.Get(ctx, lexkey.NewPrimaryKey(ts.partition("s-max"), ts.encodeRowKey(math.MaxInt64, "")))
+	require.NoError(t, err)
+	require.NotNil(t, item)
+	assert.Equal(t, []byte("max"), item.Value)
+}
+
+func TestShouldNotPruneAnythingBeforeMinTimestamp(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	ts := setupTSDescending(t)
+	require.NoError(t, ts.Append(ctx, "sd-before-min", math.MinInt64, "", []byte("min")))
+	require.NoError(t, ts.Append(ctx, "sd-before-min", 0, "", []byte("zero")))
+
+	// Act
+	require.NoError(t, ts.PruneBefore(ctx, "sd-before-min", math.MinInt64))
+	out, err := ts.QueryRange(ctx, "sd-before-min", math.MinInt64, 1)
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, []int64{0, math.MinInt64}, []int64{out[0].Timestamp, out[1].Timestamp})
+}
+
 func TestShouldEnumerateRangeStream(t *testing.T) {
 	// Arrange
 	ctx := context.Background()

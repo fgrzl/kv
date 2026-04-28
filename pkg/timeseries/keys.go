@@ -103,7 +103,8 @@ func (ts *TimeSeries) encodeRangeForBounds(from, to int64) (lexkey.LexKey, lexke
 		return startRK, endRK, true
 	}
 	// descending: smallest encoded value corresponds to largest timestamp.
-	if to <= math.MinInt64+1 {
+	// Only to == MinInt64 would underflow on the to-1 conversion.
+	if to <= math.MinInt64 {
 		return nil, nil, false
 	}
 	startRK := lexkey.Encode(ts.orderedTimestamp(to - 1))

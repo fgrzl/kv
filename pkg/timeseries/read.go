@@ -153,18 +153,29 @@ func (ts *TimeSeries) Latest(ctx context.Context, series string, n int) ([]Sampl
 // partition key used (so readers can strip it off decoded row keys) along
 // with ok=false when the range is empty or invalid.
 func (ts *TimeSeries) buildQueryArgs(series string, from, to int64, opts queryOptions) (kv.QueryArgs, lexkey.LexKey, bool) {
-	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	part, rangeKey, ok := ts.buildRangeKey(series, from, to)
 	if !ok {
 		return kv.QueryArgs{}, nil, false
 	}
-	part := ts.partition(series)
 	return kv.QueryArgs{
 		PartitionKey: part,
-		StartRowKey:  startRK,
-		EndRowKey:    endRK,
+		StartRowKey:  rangeKey.StartRowKey,
+		EndRowKey:    rangeKey.EndRowKey,
 		Operator:     kv.Between,
 		Limit:        opts.limit,
 	}, part, true
+}
+
+// buildRangeKey assembles the partition-scoped row-key bounds for a logical
+// [from, to) timestamp window. Query and prune paths share this helper so one
+// bound calculation governs both reads and deletions.
+func (ts *TimeSeries) buildRangeKey(series string, from, to int64) (lexkey.LexKey, lexkey.RangeKey, bool) {
+	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	if !ok {
+		return nil, lexkey.RangeKey{}, false
+	}
+	part := ts.partition(series)
+	return part, lexkey.NewRangeKey(part, startRK, endRK), true
 }
 
 // itemToSample reconstructs a Sample from a kv.Item by decoding the row key.

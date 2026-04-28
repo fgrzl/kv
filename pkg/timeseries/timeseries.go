@@ -25,6 +25,7 @@ package timeseries
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -139,11 +140,10 @@ func (ts *TimeSeries) DeleteSeries(ctx context.Context, series string) error {
 // retention jobs: call it with your retention cutoff to delete expired data
 // without scanning or materializing the whole series in memory.
 func (ts *TimeSeries) PruneRange(ctx context.Context, series string, from, to int64) error {
-	startRK, endRK, ok := ts.encodeRangeForBounds(from, to)
+	_, rangeKey, ok := ts.buildRangeKey(series, from, to)
 	if !ok {
 		return nil
 	}
-	rangeKey := lexkey.NewRangeKey(ts.partition(series), startRK, endRK)
 	if err := ts.store.RemoveRange(ctx, rangeKey); err != nil {
 		slog.ErrorContext(ctx, "failed to prune timeseries range", "series", series, "from", from, "to", to, "err", err)
 		return err
@@ -154,4 +154,16 @@ func (ts *TimeSeries) PruneRange(ctx context.Context, series string, from, to in
 // PruneRangeTime is the time.Time variant of PruneRange (UnixNano).
 func (ts *TimeSeries) PruneRangeTime(ctx context.Context, series string, from, to time.Time) error {
 	return ts.PruneRange(ctx, series, from.UnixNano(), to.UnixNano())
+}
+
+// PruneBefore removes samples for series with timestamps strictly less than
+// before. This is the retention-oriented helper for TTL jobs that want to
+// drop expired data while preserving samples at the cutoff timestamp.
+func (ts *TimeSeries) PruneBefore(ctx context.Context, series string, before int64) error {
+	return ts.PruneRange(ctx, series, math.MinInt64, before)
+}
+
+// PruneBeforeTime is the time.Time variant of PruneBefore (UnixNano).
+func (ts *TimeSeries) PruneBeforeTime(ctx context.Context, series string, before time.Time) error {
+	return ts.PruneBefore(ctx, series, before.UnixNano())
 }
