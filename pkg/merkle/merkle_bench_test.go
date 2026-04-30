@@ -35,6 +35,7 @@ func benchLeaves(n int) enumerators.Enumerator[Leaf] {
 }
 
 // BenchmarkBuildMerkle measures merkle tree building performance.
+// Build streams all puts through a single kv.BatchChunks call (chunked by WithBatchSize / default).
 func BenchmarkBuildMerkle(b *testing.B) {
 	m := setupBenchMerkle(b)
 	ctx := context.Background()

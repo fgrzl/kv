@@ -237,7 +237,7 @@ func TestShouldHandleJSONUnmarshalErrorInGetHash(t *testing.T) {
 	space := "errorspace"
 
 	// Manually insert invalid JSON data for a leaf
-	pk := pk(stage, space, 0, 0)
+	pk := nodePK(stage, space, 0, 0)
 	invalidJSON := []byte(`invalid json`)
 	require.NoError(t, m.store.Put(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
 

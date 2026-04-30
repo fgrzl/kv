@@ -39,6 +39,9 @@
 //
 // Build() is NOT automatically triggered by surgical updates.
 //
+// Build persists all nodes in one streamed BatchChunks pass to minimize KV round trips.
+// Optional WithSkipPruneOnBuild(true) skips the initial RemoveRange when the stage/space is known empty.
+//
 // # CONCURRENCY
 //
 // This implementation assumes a single-writer model. Concurrent writes to the same stage/space
@@ -46,15 +49,15 @@
 //
 // # STORAGE LAYOUT
 //
-// Keys: merkle/{stage}/{space}/{level}/{index}
-//   - level=0: leaf nodes (entity hashes)
-//   - level=1..N: internal nodes (parent hashes)
-//   - level=root: root hash (optimization for GetRootHash without probing max level)
-//   - level=meta: metadata (leaf count, max level)
+// One KV partition per tree so remote backends can batch and range-delete efficiently:
 //
-// The rootKey is a read optimization: instead of probing storage to find max level,
-// we store a copy of the root hash at a well-known key. The authoritative root is
-// always the hash at (maxLevel, index=0).
+//	PartitionKey = merkle/{stage}/{space}
+//	RowKey node/{level}/{index} — leaves (level 0), internal nodes, logical root at (maxLevel,0)
+//	RowKey root — cached root hash for GetRootHash without probing max level
+//	RowKey meta/{name} — leaf count, max level, etc.
+//
+// The root row is a read optimization; the authoritative root hash is always the internal
+// node at (maxLevel, index=0).
 //
 // # METADATA CONSISTENCY
 //
@@ -135,6 +138,9 @@ type Tree struct {
 	store     kv.KV
 	branching int
 	batchSize int
+	// skipPruneOnBuild skips RemoveRange at the start of Build when the caller knows the
+	// stage/space has no prior Merkle keys (saves a full scan on remote backends).
+	skipPruneOnBuild bool
 	// childBuf and childPKBuf are reused across calls to getChildHashes to eliminate repeated allocations.
 	// CONCURRENCY: SAFE because Tree assumes single-writer model (documented above).
 	// NOT safe for concurrent use - requires external synchronization if needed.
@@ -184,6 +190,15 @@ func WithBatchSize(size int) Option {
 	}
 }
 
+// WithSkipPruneOnBuild skips the RemoveRange prune step at the start of Build.
+// Use only when the stage/space is guaranteed empty or stale keys are acceptable;
+// otherwise Build may leave orphaned nodes from a previous tree.
+func WithSkipPruneOnBuild(skip bool) Option {
+	return func(m *Tree) {
+		m.skipPruneOnBuild = skip
+	}
+}
+
 // NewTree constructs a persistent Merkle tree for snapshots.
 // INVARIANT: branching factor must be >= 2 for valid tree structure.
 func NewTree(store kv.KV, opts ...Option) *Tree {
@@ -221,63 +236,32 @@ func (m *Tree) Build(ctx context.Context, stage, space string, leaves enumerator
 	defer span.End()
 
 	slog.DebugContext(ctx, "starting Merkle tree build", "stage", stage, "space", space)
-	if err := m.pruneOldNodes(ctx, stage, space); err != nil {
-		err = fmt.Errorf("prune old nodes for %s/%s: %w", stage, space, err)
-		slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
+	if !m.skipPruneOnBuild {
+		if err := m.pruneOldNodes(ctx, stage, space); err != nil {
+			err = fmt.Errorf("prune old nodes for %s/%s: %w", stage, space, err)
+			slog.ErrorContext(ctx, "failed to prune old nodes", "stage", stage, "space", space, "err", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
 	}
-	currNodes, err := m.persistLeaves(ctx, stage, space, leaves)
+	paddedNodes, batchItems, actualLeafCount, err := m.collectBuildPutBatchItems(stage, space, leaves)
 	if err != nil {
-		err = fmt.Errorf("persist leaves for %s/%s: %w", stage, space, err)
-		slog.ErrorContext(ctx, "failed to persist leaves", "stage", stage, "space", space, "err", err)
+		err = fmt.Errorf("collect build batch items for %s/%s: %w", stage, space, err)
+		slog.ErrorContext(ctx, "failed to collect build batch items", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	if len(currNodes) == 0 {
+	if len(paddedNodes) == 0 {
 		slog.DebugContext(ctx, "Merkle tree build completed with no leaves", "stage", stage, "space", space)
 		span.SetAttributes(attribute.Int("leaves", 0))
 		return nil
 	}
 
-	// Store actual leaf count BEFORE padding
-	actualLeafCount := len(currNodes)
-
-	currNodes, err = m.padLeaves(ctx, stage, space, currNodes)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to pad leaves", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	currNodes, err = m.persistInternalLevels(ctx, stage, space, currNodes)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to persist internal levels", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	if err := m.persistRoot(ctx, stage, space, currNodes); err != nil {
-		slog.ErrorContext(ctx, "failed to persist root", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-
-	// Store actual leaf count metadata
-	if err := m.setLeafCountMetadata(ctx, stage, space, actualLeafCount); err != nil {
-		slog.ErrorContext(ctx, "failed to persist leaf count", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-
-	// Store max level metadata (optimization: avoids probing storage in GetRootHash)
-	maxLevel := m.calculateMaxLevel(len(currNodes))
-	if err := m.setMaxLevelMetadata(ctx, stage, space, maxLevel); err != nil {
-		slog.ErrorContext(ctx, "failed to persist max level", "stage", stage, "space", space, "err", err)
+	if err := m.store.BatchChunks(ctx, enumerators.Slice(batchItems), m.batchSize); err != nil {
+		err = fmt.Errorf("persist merkle build for %s/%s: %w", stage, space, err)
+		slog.ErrorContext(ctx, "failed to persist merkle build", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -325,8 +309,7 @@ func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, []
 // Prune removes all Merkle nodes for the given stage and space.
 func (m *Tree) Prune(ctx context.Context, stage, space string) error {
 	slog.DebugContext(ctx, "pruning Merkle tree", "stage", stage, "space", space)
-	partition := lexkey.Encode("merkle", stage, space)
-	rangeKey := lexkey.NewRangeKeyFull(partition)
+	rangeKey := treeRangeKey(stage, space)
 	err := m.store.RemoveRange(ctx, rangeKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to prune Merkle tree", "stage", stage, "space", space, "err", err)
@@ -363,7 +346,7 @@ func (m *Tree) GetLeaf(ctx context.Context, stage, space string, leafIndex int) 
 		return Leaf{}, fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
 	}
 
-	pkVal := pk(stage, space, 0, leafIndex)
+	pkVal := nodePK(stage, space, 0, leafIndex)
 	item, err := m.store.Get(ctx, pkVal)
 	if err != nil {
 		return Leaf{}, fmt.Errorf("failed to get leaf: %w", err)
@@ -381,6 +364,7 @@ func (m *Tree) GetLeaf(ctx context.Context, stage, space string, leafIndex int) 
 
 // EnumerateLeaves returns a lazy enumerator over all leaves in the tree.
 // The enumeration includes soft-deleted leaves (with empty Ref field).
+// It scans level-0 node rows in index order via one partition range query (not N Get calls).
 func (m *Tree) EnumerateLeaves(ctx context.Context, stage, space string) enumerators.Enumerator[Leaf] {
 	if err := validateStageSpace(stage, space); err != nil {
 		return enumerators.Error[Leaf](err)
@@ -390,53 +374,24 @@ func (m *Tree) EnumerateLeaves(ctx context.Context, stage, space string) enumera
 	if err != nil {
 		return enumerators.Error[Leaf](err)
 	}
-
-	return &leafEnumerator{
-		ctx:       ctx,
-		tree:      m,
-		stage:     stage,
-		space:     space,
-		leafCount: leafCount,
-		index:     -1,
+	if leafCount == 0 {
+		return enumerators.Empty[Leaf]()
 	}
-}
 
-// leafEnumerator implements enumerators.Enumerator[Leaf]
-type leafEnumerator struct {
-	ctx       context.Context
-	tree      *Tree
-	stage     string
-	space     string
-	leafCount int
-	index     int
-	current   Leaf
-	err       error
-}
-
-func (e *leafEnumerator) MoveNext() bool {
-	e.index++
-	if e.index >= e.leafCount {
-		return false
-	}
-	leaf, err := e.tree.GetLeaf(e.ctx, e.stage, e.space, e.index)
-	if err != nil {
-		e.err = err
-		return false
-	}
-	e.current = leaf
-	return true
-}
-
-func (e *leafEnumerator) Current() (Leaf, error) {
-	return e.current, e.err
-}
-
-func (e *leafEnumerator) Err() error {
-	return e.err
-}
-
-func (e *leafEnumerator) Dispose() {
-	// No resources to clean up
+	args := nodeLevelRangeQuery(stage, space, 0, 0, leafCount-1)
+	return enumerators.Map(
+		m.store.Enumerate(ctx, args),
+		func(item *kv.Item) (Leaf, error) {
+			if item == nil {
+				return Leaf{}, fmt.Errorf("nil item in leaf enumeration")
+			}
+			var leaf Leaf
+			if err := json.Unmarshal(item.Value, &leaf); err != nil {
+				return Leaf{}, fmt.Errorf("unmarshal leaf in enumeration: %w", err)
+			}
+			return leaf, nil
+		},
+	)
 }
 
 // UpdateLeaf updates a single leaf and recomputes the path to the root.
@@ -471,7 +426,7 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 		return err
 	}
 
-	pkVal := pk(stage, space, 0, leafIndex)
+	pkVal := nodePK(stage, space, 0, leafIndex)
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
 		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
@@ -534,7 +489,7 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 		return 0, err
 	}
 
-	pkVal := pk(stage, space, 0, leafCount)
+	pkVal := nodePK(stage, space, 0, leafCount)
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
 		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
@@ -627,107 +582,96 @@ func (m *Tree) RemoveLeaf(ctx context.Context, stage, space string, leafIndex in
 // --- Build Helper Methods ---
 
 func (m *Tree) pruneOldNodes(ctx context.Context, stage, space string) error {
-	merklePrefix := lexkey.Encode("merkle", stage, space)
-	merkleRange := lexkey.NewRangeKey(merklePrefix, lexkey.Empty, lexkey.Empty)
-	return m.store.RemoveRange(ctx, merkleRange)
+	return m.store.RemoveRange(ctx, treeRangeKey(stage, space))
 }
 
-func (m *Tree) persistLeaves(ctx context.Context, stage, space string, leaves enumerators.Enumerator[Leaf]) ([]Branch, error) {
-	// Pre-allocate with reasonable capacity
+// collectBuildPutBatchItems materializes all Put operations for a full tree build
+// (leaves, padding, internal nodes, root, metadata) without touching the store.
+// paddedNodes is the padded leaf tier; actualLeafCount is the pre-padding leaf count.
+func (m *Tree) collectBuildPutBatchItems(stage, space string, leaves enumerators.Enumerator[Leaf]) (paddedNodes []Branch, batchItems []*kv.BatchItem, actualLeafCount int, err error) {
+	partition := treePartition(stage, space)
 	currNodes := make([]Branch, 0, 1000)
-	batch := make([]*kv.BatchItem, 0, m.batchSize)
-
+	batchItems = make([]*kv.BatchItem, 0, 1024)
 	index := 0
-	writeLeafNode := func(idx int, val []byte) error {
-		pk := pk(stage, space, 0, idx)
-		batch = append(batch, &kv.BatchItem{PK: pk, Value: val, Op: kv.Put})
-		if len(batch) >= m.batchSize {
-			if err := m.store.Batch(ctx, batch); err != nil {
-				return err
-			}
-			batch = batch[:0] // Reset batch
-		}
-		return nil
-	}
-
 	if err := enumerators.ForEach(leaves, func(leaf Leaf) error {
-		val, err := json.Marshal(leaf)
-		if err != nil {
-			return err
+		val, e := json.Marshal(leaf)
+		if e != nil {
+			return e
 		}
-		if err := writeLeafNode(index, val); err != nil {
-			return err
-		}
+		batchItems = append(batchItems, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, 0, index),
+			Value: val,
+			Op:    kv.Put,
+		})
 		currNodes = append(currNodes, Branch{Hash: leaf.Hash, Level: 0, Index: index})
 		index++
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
+	if len(currNodes) == 0 {
+		return nil, nil, 0, nil
+	}
+	actualLeafCount = len(currNodes)
 
-	if len(batch) > 0 {
-		if err := m.store.Batch(ctx, batch); err != nil {
-			return nil, err
-		}
-	}
-	return currNodes, nil
-}
-
-func (m *Tree) padLeaves(ctx context.Context, stage, space string, currNodes []Branch) ([]Branch, error) {
-	if len(currNodes)%m.branching == 0 {
-		return currNodes, nil
-	}
-	batch := make([]*kv.BatchItem, 0, m.batchSize)
-	writePadding := func(idx int, val []byte) error {
-		pk := pk(stage, space, 0, idx)
-		batch = append(batch, &kv.BatchItem{PK: pk, Value: val, Op: kv.Put})
-		if len(batch) >= m.batchSize {
-			if err := m.store.Batch(ctx, batch); err != nil {
-				return err
-			}
-			batch = batch[:0]
-		}
-		return nil
-	}
 	for len(currNodes)%m.branching != 0 {
-		// INVARIANT: Padding nodes use domain-separated hashes to prevent collision with user data
 		hash := paddingHash()
 		leaf := Leaf{Hash: hash}
-		val, err := json.Marshal(leaf)
-		if err != nil {
-			return nil, err
+		val, e := json.Marshal(leaf)
+		if e != nil {
+			return nil, nil, 0, e
 		}
-		if err := writePadding(len(currNodes), val); err != nil {
-			return nil, err
-		}
-		currNodes = append(currNodes, Branch{Hash: hash, Level: 0, Index: len(currNodes)})
+		idx := len(currNodes)
+		batchItems = append(batchItems, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, 0, idx),
+			Value: val,
+			Op:    kv.Put,
+		})
+		currNodes = append(currNodes, Branch{Hash: hash, Level: 0, Index: idx})
 	}
-	if len(batch) > 0 {
-		if err := m.store.Batch(ctx, batch); err != nil {
-			return nil, err
-		}
-	}
-	return currNodes, nil
-}
 
-func (m *Tree) persistInternalLevels(ctx context.Context, stage, space string, nodes []Branch) ([]Branch, error) {
+	nodes := currNodes
 	level := 1
 	for len(nodes) > 1 {
-		var (
-			next  []Branch
-			batch []*kv.BatchItem
-		)
-		next, batch = m.hashNodeLevel(stage, space, nodes, level)
-		if err := m.commitBatchIfNeeded(ctx, batch); err != nil {
-			return nil, err
-		}
+		var next []Branch
+		var batch []*kv.BatchItem
+		next, batch = m.hashNodeLevelInPartition(partition, nodes, level)
+		batchItems = append(batchItems, batch...)
 		nodes = next
 		level++
 	}
-	return nodes, nil
+	if len(nodes) != 1 {
+		return nil, nil, 0, fmt.Errorf("collectBuildPutBatchItems: expected 1 root node, got %d", len(nodes))
+	}
+	root := nodes[0]
+	batchItems = append(batchItems, &kv.BatchItem{
+		PK:    rootPKInPartition(partition),
+		Value: root.Hash,
+		Op:    kv.Put,
+	})
+
+	maxLevel := m.calculateMaxLevel(len(currNodes))
+	batchItems = append(batchItems,
+		&kv.BatchItem{
+			PK:    metaPKInPartition(partition, leafCountKey),
+			Value: []byte(fmt.Sprintf("%d", actualLeafCount)),
+			Op:    kv.Put,
+		},
+		&kv.BatchItem{
+			PK:    metaPKInPartition(partition, maxLevelKey),
+			Value: []byte(fmt.Sprintf("%d", maxLevel)),
+			Op:    kv.Put,
+		},
+	)
+
+	return currNodes, batchItems, actualLeafCount, nil
 }
 
 func (m *Tree) hashNodeLevel(stage, space string, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
+	return m.hashNodeLevelInPartition(treePartition(stage, space), nodes, level)
+}
+
+func (m *Tree) hashNodeLevelInPartition(partition lexkey.LexKey, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
 	numGroups := (len(nodes) + m.branching - 1) / m.branching
 
 	// Pre-allocate slices for better performance
@@ -737,7 +681,7 @@ func (m *Tree) hashNodeLevel(stage, space string, nodes []Branch, level int) ([]
 	for i := 0; i < len(nodes); i += m.branching {
 		end := min(i+m.branching, len(nodes))
 		sum := hashNodes(nodes[i:end])
-		pkVal := pk(stage, space, level, i/m.branching)
+		pkVal := nodePKInPartition(partition, level, i/m.branching)
 		batch = append(batch, &kv.BatchItem{PK: pkVal, Value: sum, Op: kv.Put})
 		next = append(next, Branch{Hash: sum, Level: level, Index: i / m.branching})
 	}
@@ -757,15 +701,6 @@ func hashNodes(nodes []Branch) []byte {
 		hashes[i] = n.Hash
 	}
 	return hashByteSlices(hashes)
-}
-
-func (m *Tree) persistRoot(ctx context.Context, stage, space string, nodes []Branch) error {
-	if len(nodes) != 1 {
-		return fmt.Errorf("persistRoot: expected 1 node, got %d", len(nodes))
-	}
-	root := nodes[0]
-	pkVal := pk(stage, space, rootKey, "")
-	return m.store.Put(ctx, &kv.Item{PK: pkVal, Value: root.Hash})
 }
 
 func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodePosition) enumerators.Enumerator[Leaf] {
@@ -865,7 +800,7 @@ func (m *Tree) diffChildNodes(ctx context.Context, prev, curr, space string, ref
 
 func (m *Tree) findMaxLevel(ctx context.Context, stage, space string) int {
 	for h := 0; ; h++ {
-		pkVal := pk(stage, space, h, 0)
+		pkVal := nodePK(stage, space, h, 0)
 		item, err := m.store.Get(ctx, pkVal)
 		if err != nil || item == nil {
 			return h - 1
@@ -876,9 +811,9 @@ func (m *Tree) findMaxLevel(ctx context.Context, stage, space string) int {
 func (m *Tree) walkSubtree(ctx context.Context, stage, space string, ref NodePosition) enumerators.Enumerator[Leaf] {
 	var pkVal lexkey.PrimaryKey
 	if ref.Level < 0 {
-		pkVal = pk(stage, space, rootKey, "")
+		pkVal = rootPK(stage, space)
 	} else {
-		pkVal = pk(stage, space, ref.Level, ref.Index)
+		pkVal = nodePK(stage, space, ref.Level, ref.Index)
 	}
 	item, err := m.store.Get(ctx, pkVal)
 	if err != nil || item == nil {
@@ -913,9 +848,9 @@ func (m *Tree) scanLeaves(ctx context.Context, stage, space string) enumerators.
 func (m *Tree) getHash(ctx context.Context, stage, space string, ref NodePosition) ([]byte, []byte, error) {
 	var pkVal lexkey.PrimaryKey
 	if ref.Level < 0 {
-		pkVal = pk(stage, space, rootKey, "")
+		pkVal = rootPK(stage, space)
 	} else {
-		pkVal = pk(stage, space, ref.Level, ref.Index)
+		pkVal = nodePK(stage, space, ref.Level, ref.Index)
 	}
 	item, err := m.store.Get(ctx, pkVal)
 	if err != nil {
@@ -946,14 +881,14 @@ func validateStageSpace(stage, space string) error {
 
 // setLeafCountMetadata stores the actual leaf count (excluding padding).
 func (m *Tree) setLeafCountMetadata(ctx context.Context, stage, space string, count int) error {
-	pkVal := pk(stage, space, metaPrefix, leafCountKey)
+	pkVal := metaPK(stage, space, leafCountKey)
 	val := []byte(fmt.Sprintf("%d", count))
 	return m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val})
 }
 
 // getLeafCountMetadata retrieves the actual leaf count from metadata.
 func (m *Tree) getLeafCountMetadata(ctx context.Context, stage, space string) (int, error) {
-	pkVal := pk(stage, space, metaPrefix, leafCountKey)
+	pkVal := metaPK(stage, space, leafCountKey)
 	item, err := m.store.Get(ctx, pkVal)
 	if err != nil {
 		return 0, fmt.Errorf("get leaf count metadata for %s/%s: %w", stage, space, err)
@@ -973,7 +908,7 @@ func (m *Tree) getLeafCountMetadata(ctx context.Context, stage, space string) (i
 
 // setMaxLevelMetadata stores the maximum tree level.
 func (m *Tree) setMaxLevelMetadata(ctx context.Context, stage, space string, level int) error {
-	pkVal := pk(stage, space, metaPrefix, maxLevelKey)
+	pkVal := metaPK(stage, space, maxLevelKey)
 	val := []byte(fmt.Sprintf("%d", level))
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
 		return fmt.Errorf("set max level metadata for %s/%s: %w", stage, space, err)
@@ -998,6 +933,7 @@ func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, spac
 	if leafIndex >= leafCount {
 		return fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
 	}
+	partition := treePartition(stage, space)
 
 	// Calculate max level from current tree structure
 	paddedLeafCount := m.getPaddedCount(leafCount)
@@ -1010,7 +946,7 @@ func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, spac
 		parentIndex := currentIndex / m.branching
 
 		// Get all sibling hashes for this parent
-		childHashes, err := m.getChildHashes(ctx, stage, space, level-1, parentIndex)
+		childHashes, err := m.getChildHashesInPartition(ctx, partition, level-1, parentIndex)
 		if err != nil {
 			return err
 		}
@@ -1019,7 +955,7 @@ func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, spac
 		parentHash := hashByteSlices(childHashes)
 
 		// Store parent node
-		pkVal := pk(stage, space, level, parentIndex)
+		pkVal := nodePKInPartition(partition, level, parentIndex)
 		if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: parentHash}); err != nil {
 			return err
 		}
@@ -1042,7 +978,7 @@ func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, spac
 		return fmt.Errorf("%w: root hash is nil at level %d for %s/%s", errInvalidTreeState, maxLevel, stage, space)
 	}
 
-	pkVal := pk(stage, space, rootKey, "")
+	pkVal := rootPKInPartition(partition)
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: rootHash}); err != nil {
 		return fmt.Errorf("store root hash for %s/%s: %w", stage, space, err)
 	}
@@ -1053,13 +989,17 @@ func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, spac
 // getChildHashes retrieves all child hashes for a given parent node.
 // Returns all existing child hashes in order.
 func (m *Tree) getChildHashes(ctx context.Context, stage, space string, level, parentIndex int) ([][]byte, error) {
+	return m.getChildHashesInPartition(ctx, treePartition(stage, space), level, parentIndex)
+}
+
+func (m *Tree) getChildHashesInPartition(ctx context.Context, partition lexkey.LexKey, level, parentIndex int) ([][]byte, error) {
 	// Reuse childBuf to avoid allocation on every call
 	m.childBuf = m.childBuf[:0]
 	m.childPKBuf = m.childPKBuf[:0]
 
 	for i := 0; i < m.branching; i++ {
 		childIndex := parentIndex*m.branching + i
-		m.childPKBuf = append(m.childPKBuf, pk(stage, space, level, childIndex))
+		m.childPKBuf = append(m.childPKBuf, nodePKInPartition(partition, level, childIndex))
 	}
 
 	results, err := m.store.GetBatch(ctx, m.childPKBuf...)
@@ -1084,6 +1024,41 @@ func (m *Tree) getChildHashes(ctx context.Context, stage, space string, level, p
 	return m.childBuf, nil
 }
 
+// loadLevelNodeHashesInOrder loads every stored hash at the given Merkle level in one
+// partition range scan (index order), for bottom-up recomputation without per-parent GetBatch.
+func (m *Tree) loadLevelNodeHashesInOrder(ctx context.Context, stage, space string, level, nodeCount int) ([][]byte, error) {
+	return m.loadLevelNodeHashesInOrderInPartition(ctx, treePartition(stage, space), level, nodeCount)
+}
+
+func (m *Tree) loadLevelNodeHashesInOrderInPartition(ctx context.Context, partition lexkey.LexKey, level, nodeCount int) ([][]byte, error) {
+	if nodeCount <= 0 {
+		return nil, nil
+	}
+	args := nodeLevelRangeQueryInPartition(partition, level, 0, nodeCount-1)
+	items, err := enumerators.ToSlice(m.store.Enumerate(ctx, args))
+	if err != nil {
+		return nil, err
+	}
+	if len(items) != nodeCount {
+		return nil, fmt.Errorf("loadLevelNodeHashesInOrder: expected %d nodes at level %d, got %d", nodeCount, level, len(items))
+	}
+	out := make([][]byte, 0, nodeCount)
+	for _, item := range items {
+		if item == nil {
+			return nil, fmt.Errorf("loadLevelNodeHashesInOrder: nil item at level %d", level)
+		}
+		h, err := m.hashFromStoredValue(level, item.Value)
+		if err != nil {
+			return nil, err
+		}
+		if h == nil {
+			return nil, fmt.Errorf("loadLevelNodeHashesInOrder: nil hash at level %d", level)
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
 func (m *Tree) hashFromStoredValue(level int, value []byte) ([]byte, error) {
 	if level != 0 {
 		return value, nil
@@ -1104,10 +1079,10 @@ func (m *Tree) hashFromStoredValue(level int, value []byte) ([]byte, error) {
 }
 
 // updateRootHash updates the root hash from the topmost internal node.
-// The root hash is stored at both (maxLevel, index=0) and at the rootKey.
-// The rootKey is a read optimization: GetRootHash can retrieve the root without
+// The root hash is stored at both node/(maxLevel,0) and the root row key.
+// The root row is a read optimization: GetRootHash can retrieve the root without
 // loading maxLevel metadata or probing storage. The authoritative root is always
-// the hash at (maxLevel, index=0); rootKey is a cached copy.
+// the hash at (maxLevel, index=0); the root row is a cached copy.
 func (m *Tree) updateRootHash(ctx context.Context, stage, space string, maxLevel int) error {
 	if maxLevel < 0 {
 		// Empty tree: no root to update
@@ -1121,7 +1096,7 @@ func (m *Tree) updateRootHash(ctx context.Context, stage, space string, maxLevel
 		// Should never happen: internal invariant violation
 		return fmt.Errorf("%w: root hash is nil at level %d for %s/%s", errInvalidTreeState, maxLevel, stage, space)
 	}
-	pkVal := pk(stage, space, rootKey, "")
+	pkVal := rootPK(stage, space)
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: rootHash}); err != nil {
 		return fmt.Errorf("store root hash for %s/%s: %w", stage, space, err)
 	}
@@ -1169,6 +1144,7 @@ func (m *Tree) ensurePaddingExists(ctx context.Context, stage, space string, sta
 	if start >= end {
 		return nil
 	}
+	partition := treePartition(stage, space)
 
 	// INVARIANT: Padding aligns leaf count to branching factor for balanced tree structure
 	paddingLeaf := Leaf{Hash: paddingHash()}
@@ -1180,7 +1156,7 @@ func (m *Tree) ensurePaddingExists(ctx context.Context, stage, space string, sta
 	// Batch padding creation for better performance
 	batch := make([]*kv.BatchItem, 0, end-start)
 	for i := start; i < end; i++ {
-		pkVal := pk(stage, space, 0, i)
+		pkVal := nodePKInPartition(partition, 0, i)
 		// During AddLeaf, we know padding doesn't exist, so skip the Get check
 		// This is safe because we control when padding is created
 		batch = append(batch, &kv.BatchItem{PK: pkVal, Value: val, Op: kv.Put})
@@ -1210,6 +1186,7 @@ func (m *Tree) recomputeAffectedNodes(ctx context.Context, stage, space string, 
 // Called when tree structure changes (height increase) or after corruption recovery.
 // PERFORMANCE: O(N) for full rebuild, but rare - only when adding leaf changes tree height.
 func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space string) error {
+	partition := treePartition(stage, space)
 	leafCount, err := m.GetLeafCount(ctx, stage, space)
 	if err != nil {
 		return fmt.Errorf("get leaf count in recomputeAllInternalNodes: %w", err)
@@ -1238,7 +1215,7 @@ func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space strin
 			return err
 		}
 		if leafHash != nil {
-			pkVal := pk(stage, space, "root", "")
+			pkVal := rootPKInPartition(partition)
 			if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: leafHash}); err != nil {
 				return err
 			}
@@ -1246,7 +1223,7 @@ func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space strin
 		return nil
 	}
 
-	// Recompute each level bottom-up
+	// Recompute each level bottom-up (one range scan per level to load child hashes).
 	for level := 1; level <= maxLevel; level++ {
 		nodesAtPrevLevel := paddedCount
 		for l := 1; l < level; l++ {
@@ -1254,19 +1231,26 @@ func (m *Tree) recomputeAllInternalNodes(ctx context.Context, stage, space strin
 		}
 
 		nodesAtThisLevel := (nodesAtPrevLevel + m.branching - 1) / m.branching
+		prevLevel := level - 1
+		prevHashes, err := m.loadLevelNodeHashesInOrderInPartition(ctx, partition, prevLevel, nodesAtPrevLevel)
+		if err != nil {
+			return err
+		}
+
 		batch := make([]*kv.BatchItem, 0, nodesAtThisLevel)
-
 		for parentIdx := 0; parentIdx < nodesAtThisLevel; parentIdx++ {
-			childHashes, err := m.getChildHashes(ctx, stage, space, level-1, parentIdx)
-			if err != nil {
-				return err
+			start := parentIdx * m.branching
+			if start >= nodesAtPrevLevel {
+				break
 			}
-
-			if len(childHashes) > 0 {
-				parentHash := hashByteSlices(childHashes)
-				pkVal := pk(stage, space, level, parentIdx)
-				batch = append(batch, &kv.BatchItem{PK: pkVal, Value: parentHash, Op: kv.Put})
+			end := min(start+m.branching, nodesAtPrevLevel)
+			childHashes := prevHashes[start:end]
+			if len(childHashes) == 0 {
+				continue
 			}
+			parentHash := hashByteSlices(childHashes)
+			pkVal := nodePKInPartition(partition, level, parentIdx)
+			batch = append(batch, &kv.BatchItem{PK: pkVal, Value: parentHash, Op: kv.Put})
 		}
 
 		if err := m.commitBatchIfNeeded(ctx, batch); err != nil {
@@ -1321,10 +1305,58 @@ func hashByteSlices(slices [][]byte) []byte {
 
 // --- Storage Helpers ---
 
-func pk(stage, space string, level, index any) lexkey.PrimaryKey {
+func treePartition(stage, space string) lexkey.LexKey {
+	return lexkey.Encode("merkle", stage, space)
+}
+
+// treeRangeKey covers every row in the Merkle tree partition for this stage/space.
+func treeRangeKey(stage, space string) lexkey.RangeKey {
+	return lexkey.NewRangeKeyFull(treePartition(stage, space))
+}
+
+// nodeLevelRangeQuery returns a partition-scoped row-key Between query for Merkle nodes at
+// the given level with indices in [firstIndex, lastIndexInclusive].
+// Requires lexkey ordering of Encode("node", level, index) to follow integer index order.
+func nodeLevelRangeQuery(stage, space string, level, firstIndex, lastIndexInclusive int) kv.QueryArgs {
+	return nodeLevelRangeQueryInPartition(treePartition(stage, space), level, firstIndex, lastIndexInclusive)
+}
+
+func nodeLevelRangeQueryInPartition(partition lexkey.LexKey, level, firstIndex, lastIndexInclusive int) kv.QueryArgs {
+	return kv.QueryArgs{
+		PartitionKey: partition,
+		StartRowKey:  lexkey.Encode("node", level, firstIndex),
+		EndRowKey:    lexkey.Encode("node", level, lastIndexInclusive),
+		Operator:     kv.Between,
+	}
+}
+
+func nodePK(stage, space string, level, index int) lexkey.PrimaryKey {
+	return nodePKInPartition(treePartition(stage, space), level, index)
+}
+
+func nodePKInPartition(partition lexkey.LexKey, level, index int) lexkey.PrimaryKey {
 	return lexkey.NewPrimaryKey(
-		lexkey.Encode("merkle", stage, space, level),
-		lexkey.Encode(index),
+		partition,
+		lexkey.Encode("node", level, index),
+	)
+}
+
+func rootPK(stage, space string) lexkey.PrimaryKey {
+	return rootPKInPartition(treePartition(stage, space))
+}
+
+func rootPKInPartition(partition lexkey.LexKey) lexkey.PrimaryKey {
+	return lexkey.NewPrimaryKey(partition, lexkey.Encode(rootKey))
+}
+
+func metaPK(stage, space, metaName string) lexkey.PrimaryKey {
+	return metaPKInPartition(treePartition(stage, space), metaName)
+}
+
+func metaPKInPartition(partition lexkey.LexKey, metaName string) lexkey.PrimaryKey {
+	return lexkey.NewPrimaryKey(
+		partition,
+		lexkey.Encode(metaPrefix, metaName),
 	)
 }
 

@@ -13,10 +13,12 @@ import (
 // Thresholds are intentionally loose (~20% margin) to avoid flakiness while catching regressions.
 
 // TestShouldNotExceedUpdateLeafAllocationBudget guards against allocation regressions in UpdateLeaf.
-// Current baseline: ~403 allocs/op (after Phase 1 optimizations)
-// Threshold: 480 allocs/op (20% margin)
+// Current baseline: ~324 allocs/op (single-partition row keys with partition-aware helpers)
+// Threshold: 390 allocs/op (~20% margin over baseline)
 func TestShouldNotExceedUpdateLeafAllocationBudget(t *testing.T) {
-	const maxAllocs = 480 // 403 baseline + 20% margin
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 390
 
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "merkle")
@@ -50,7 +52,7 @@ func TestShouldNotExceedUpdateLeafAllocationBudget(t *testing.T) {
 
 	allocsPerOp := result.AllocsPerOp()
 	if allocsPerOp > maxAllocs {
-		t.Errorf("UpdateLeaf allocation regression: got %d allocs/op, expected ≤%d (baseline: 403)",
+		t.Errorf("UpdateLeaf allocation regression: got %d allocs/op, expected ≤%d (baseline: 324)",
 			allocsPerOp, maxAllocs)
 		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
 	}
@@ -59,11 +61,13 @@ func TestShouldNotExceedUpdateLeafAllocationBudget(t *testing.T) {
 }
 
 // TestShouldNotExceedAddLeafAllocationBudget guards against allocation regressions in AddLeaf.
-// Current baseline: ~950 allocs/op (includes tree growth/recomputation when adding to existing tree)
-// Threshold: 1150 allocs/op (20% margin)
+// Current baseline: ~261 allocs/op (single-partition keys with partition-aware helpers)
+// Threshold: 340 allocs/op
 // NOTE: AddLeaf can trigger full recomputation when tree height increases, causing higher allocations.
 func TestShouldNotExceedAddLeafAllocationBudget(t *testing.T) {
-	const maxAllocs = 1150 // 950 baseline + 20% margin
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 340
 
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "merkle")
@@ -100,7 +104,7 @@ func TestShouldNotExceedAddLeafAllocationBudget(t *testing.T) {
 
 	allocsPerOp := result.AllocsPerOp()
 	if allocsPerOp > maxAllocs {
-		t.Errorf("AddLeaf allocation regression: got %d allocs/op, expected ≤%d (baseline: 950)",
+		t.Errorf("AddLeaf allocation regression: got %d allocs/op, expected ≤%d (baseline: 261)",
 			allocsPerOp, maxAllocs)
 		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
 	}
@@ -110,10 +114,12 @@ func TestShouldNotExceedAddLeafAllocationBudget(t *testing.T) {
 
 // TestShouldNotExceedDiffSparseChangeAllocationBudget guards against allocation regressions in Diff.
 // Measures sparse diff performance (single leaf change in 100K tree).
-// Current baseline: ~1500 allocs for single-leaf diff (empirical)
-// Threshold: 1800 allocs (20% margin)
+// Current baseline: ~1780 allocs/op (single-partition row keys)
+// Threshold: 2200 allocs/op
 func TestShouldNotExceedDiffSparseChangeAllocationBudget(t *testing.T) {
-	const maxAllocs = 1800 // 1500 baseline + 20% margin
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 2200
 
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "merkle")
@@ -168,12 +174,19 @@ func TestShouldNotExceedDiffSparseChangeAllocationBudget(t *testing.T) {
 
 	allocsPerOp := result.AllocsPerOp()
 	if allocsPerOp > maxAllocs {
-		t.Errorf("Diff allocation regression: got %d allocs/op, expected ≤%d (baseline: 1500)",
+		t.Errorf("Diff allocation regression: got %d allocs/op, expected ≤%d (baseline: 1780)",
 			allocsPerOp, maxAllocs)
 		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
 	}
 
 	t.Logf("Diff sparse change allocations: %d allocs/op (threshold: %d)", allocsPerOp, maxAllocs)
+}
+
+func skipAllocationGuardUnderRace(t *testing.T) {
+	t.Helper()
+	if raceDetectorEnabled {
+		t.Skip("allocation budgets are not meaningful under -race instrumentation")
+	}
 }
 
 // generateTestLeaves creates an enumerator of test leaves for benchmarking.

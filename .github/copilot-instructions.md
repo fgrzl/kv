@@ -15,7 +15,7 @@ Welcome, Copilot! The KV library is a **pluggable key-value store abstraction** 
 **Overlay Abstractions** (`pkg/`):
 
 - **Graph** (`graph/`): Directed graph with BFS/DFS traversal; stores nodes and edges separately with forward/inverse indices for bidirectional queries
-- **Merkle** (`merkle/`): Persistent Merkle trees for entity snapshots; stores tree nodes in KV with hash verification
+- **Merkle** (`merkle/`): Persistent Merkle trees for entity snapshots; one KV partition per `(stage, space)` tree (`node/level/index`, `root`, `meta/*` row keys) for efficient batching and range deletes
 - **Timeseries** (`timeseries/`): Time-bucketed data for range queries
 - **Index** (`index/`): Inverted indices for full-text search
 - **Search** (`search/`): Combined index + query logic
