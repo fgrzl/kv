@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zeebo/blake3"
-
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/kv/pkg/storage/pebble"
@@ -26,8 +24,7 @@ func setup(t *testing.T) *Tree {
 }
 
 func hashFor(data string) []byte {
-	h := blake3.Sum256([]byte(data))
-	return h[:]
+	return ComputeHash([]byte(data))
 }
 
 func leaf(ref string) Leaf {
@@ -859,6 +856,69 @@ func TestInvariantSurgicalUpdateEqualsRebuild(t *testing.T) {
 	assert.Equal(t, rebuildRoot, surgicalRoot, "surgical updates must produce same root as full rebuild")
 }
 
+func TestInvariantBatchLeafMutationsEqualsRebuild(t *testing.T) {
+	// Batch mutations should produce the same final tree as a full rebuild.
+
+	// Arrange
+	ctx := context.Background()
+	m := setup(t)
+	stage := "test"
+	space1 := "batched"
+	space2 := "rebuild"
+
+	require.NoError(t, m.Build(ctx, stage, space1, leaves("A", "B", "C", "D")))
+	origRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	require.NoError(t, err)
+
+	resultIndexes, err := m.ApplyLeafMutations(ctx, stage, space1, []LeafMutation{
+		{Index: 1, Leaf: leaf("X")},
+		{Index: 2, Remove: true},
+		{Append: true, Leaf: leaf("E")},
+		{Append: true, Leaf: leaf("F")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 4, 5}, resultIndexes)
+
+	count, err := m.GetLeafCount(ctx, stage, space1)
+	require.NoError(t, err)
+	assert.Equal(t, 6, count)
+
+	leaf1, err := m.GetLeaf(ctx, stage, space1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "X", leaf1.Ref)
+
+	leaf2, err := m.GetLeaf(ctx, stage, space1, 2)
+	require.NoError(t, err)
+	assert.Empty(t, leaf2.Ref)
+	assert.Equal(t, deletedHash(), leaf2.Hash)
+
+	leaf4, err := m.GetLeaf(ctx, stage, space1, 4)
+	require.NoError(t, err)
+	assert.Equal(t, "E", leaf4.Ref)
+
+	leaf5, err := m.GetLeaf(ctx, stage, space1, 5)
+	require.NoError(t, err)
+	assert.Equal(t, "F", leaf5.Ref)
+
+	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	require.NoError(t, err)
+	assert.NotEqual(t, origRoot, mutatedRoot)
+
+	expectedLeaves := []Leaf{
+		leaf("A"),
+		leaf("X"),
+		{Ref: "", Hash: deletedHash()},
+		leaf("D"),
+		leaf("E"),
+		leaf("F"),
+	}
+	require.NoError(t, m.Build(ctx, stage, space2, enumerators.Slice(expectedLeaves)))
+	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	require.NoError(t, err)
+
+	assert.Equal(t, expectedRoot, mutatedRoot, "batch mutations must match a rebuild with the same final leaves")
+}
+
 func TestInvariantRootHashDeterminism(t *testing.T) {
 	// Root hash must be deterministic for identical leaf sets
 
@@ -1066,6 +1126,27 @@ func TestInvariantEnumerationCompleteness(t *testing.T) {
 	for i, expected := range expectedRefs {
 		assert.Equal(t, expected, result[i].Ref, "leaf at index %d", i)
 	}
+}
+
+func TestInvariantBatchLeafReadsPreserveOrder(t *testing.T) {
+	// Batch leaf reads must return the requested indexes in the same order they were asked for.
+
+	// Arrange
+	ctx := context.Background()
+	m := setup(t)
+	stage := "test"
+	space := "batch-read"
+	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C", "D", "E")))
+
+	// Act
+	result, err := m.GetLeavesByIndex(ctx, stage, space, []int{3, 1, 4})
+
+	// Assert
+	require.NoError(t, err)
+	require.Len(t, result, 3)
+	assert.Equal(t, "D", result[0].Ref)
+	assert.Equal(t, "B", result[1].Ref)
+	assert.Equal(t, "E", result[2].Ref)
 }
 
 func TestInvariantBranchingFactorRespected(t *testing.T) {

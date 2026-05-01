@@ -280,3 +280,66 @@ func BenchmarkDiffSparseChange_100k(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkApplyLeafMutations_Scale measures batched mutation performance at different tree sizes.
+func BenchmarkApplyLeafMutations_Scale(b *testing.B) {
+	sizes := []int{1_000, 10_000, 100_000}
+
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", n), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			mutations := []LeafMutation{
+				{Index: n / 3, Leaf: leaf("updated")},
+				{Index: n / 2, Remove: true},
+				{Append: true, Leaf: leaf("append-a")},
+				{Append: true, Leaf: leaf("append-b")},
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				stage := fmt.Sprintf("mut-stage-%d", i)
+
+				b.StopTimer()
+				if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+
+				if _, err := m.ApplyLeafMutations(ctx, stage, "bench", mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkGetLeavesByIndex_Scale measures ordered batch leaf reads at different tree sizes.
+func BenchmarkGetLeavesByIndex_Scale(b *testing.B) {
+	sizes := []int{1_000, 10_000, 100_000}
+
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", n), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			stage := fmt.Sprintf("read-stage-%d", n)
+
+			if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {
+				b.Fatal(err)
+			}
+
+			indexes := []int{n - 1, 1, n / 2, 3, n / 3}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				leaves, err := m.GetLeavesByIndex(ctx, stage, "bench", indexes)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(leaves) != len(indexes) {
+					b.Fatalf("expected %d leaves, got %d", len(indexes), len(leaves))
+				}
+			}
+		})
+	}
+}

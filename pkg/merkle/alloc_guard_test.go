@@ -182,6 +182,97 @@ func TestShouldNotExceedDiffSparseChangeAllocationBudget(t *testing.T) {
 	t.Logf("Diff sparse change allocations: %d allocs/op (threshold: %d)", allocsPerOp, maxAllocs)
 }
 
+// TestShouldNotExceedApplyLeafMutationsAllocationBudget guards against allocation regressions in ApplyLeafMutations.
+// Measures a stable mixed batch on a 10K tree without height growth.
+func TestShouldNotExceedApplyLeafMutationsAllocationBudget(t *testing.T) {
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 2000
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle")
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	tree := NewTree(store)
+
+	leaves := generateTestLeaves(10_000)
+	if err := tree.Build(ctx, "blue", "testspace", leaves); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	mutations := []LeafMutation{
+		{Index: 1234, Leaf: leaf("updated-1234")},
+		{Index: 2345, Remove: true},
+		{Index: 3456, Leaf: leaf("updated-3456")},
+		{Index: 4567, Remove: true},
+	}
+
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := tree.ApplyLeafMutations(ctx, "blue", "testspace", mutations); err != nil {
+				b.Fatalf("ApplyLeafMutations failed: %v", err)
+			}
+		}
+	})
+
+	allocsPerOp := result.AllocsPerOp()
+	if allocsPerOp > maxAllocs {
+		t.Errorf("ApplyLeafMutations allocation regression: got %d allocs/op, expected ≤%d", allocsPerOp, maxAllocs)
+		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
+	}
+
+	t.Logf("ApplyLeafMutations allocations: %d allocs/op (threshold: %d)", allocsPerOp, maxAllocs)
+}
+
+// TestShouldNotExceedGetLeavesByIndexAllocationBudget guards against allocation regressions in GetLeavesByIndex.
+// Measures ordered batch reads on a 100K tree.
+func TestShouldNotExceedGetLeavesByIndexAllocationBudget(t *testing.T) {
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 220
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle")
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	tree := NewTree(store)
+
+	leaves := generateTestLeaves(100_000)
+	if err := tree.Build(ctx, "blue", "testspace", leaves); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	indexes := []int{99_999, 1, 50_000, 3, 33_333}
+
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			result, err := tree.GetLeavesByIndex(ctx, "blue", "testspace", indexes)
+			if err != nil {
+				b.Fatalf("GetLeavesByIndex failed: %v", err)
+			}
+			if len(result) != len(indexes) {
+				b.Fatalf("expected %d leaves, got %d", len(indexes), len(result))
+			}
+		}
+	})
+
+	allocsPerOp := result.AllocsPerOp()
+	if allocsPerOp > maxAllocs {
+		t.Errorf("GetLeavesByIndex allocation regression: got %d allocs/op, expected ≤%d", allocsPerOp, maxAllocs)
+		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
+	}
+
+	t.Logf("GetLeavesByIndex allocations: %d allocs/op (threshold: %d)", allocsPerOp, maxAllocs)
+}
+
 func skipAllocationGuardUnderRace(t *testing.T) {
 	t.Helper()
 	if raceDetectorEnabled {
