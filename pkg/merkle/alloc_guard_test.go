@@ -228,6 +228,122 @@ func TestShouldNotExceedApplyLeafMutationsAllocationBudget(t *testing.T) {
 	t.Logf("ApplyLeafMutations allocations: %d allocs/op (threshold: %d)", allocsPerOp, maxAllocs)
 }
 
+// TestShouldNotExceedAppendOnlyApplyLeafMutationsAllocationBudget guards against allocation regressions
+// in the append-only ApplyLeafMutations path that models bulk projector appends.
+func TestShouldNotExceedAppendOnlyApplyLeafMutationsAllocationBudget(t *testing.T) {
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 2200
+	const appendCount = 90
+	const measuredRuns = 25
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle")
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	tree := NewTree(store)
+
+	leaves := generateTestLeaves(10_000)
+	if err := tree.Build(ctx, "blue", "testspace", leaves); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	mutations := make([]LeafMutation, appendCount)
+	for i := range mutations {
+		mutations[i] = LeafMutation{Append: true, Leaf: leaf(fmt.Sprintf("append-%d", i))}
+	}
+
+	stages := make([]string, measuredRuns)
+	for i := range stages {
+		stage := fmt.Sprintf("blue-%d", i)
+		stages[i] = stage
+		if err := tree.Build(ctx, stage, "testspace", generateTestLeaves(10_000)); err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+	}
+
+	runIndex := 0
+	allocsPerOp := testing.AllocsPerRun(measuredRuns, func() {
+		stage := stages[runIndex%len(stages)]
+		runIndex++
+		if _, err := tree.ApplyLeafMutations(ctx, stage, "testspace", mutations); err != nil {
+			t.Fatalf("ApplyLeafMutations failed: %v", err)
+		}
+	})
+	allocsPerOpInt := int64(allocsPerOp)
+	if allocsPerOpInt > maxAllocs {
+		t.Errorf("append-only ApplyLeafMutations allocation regression: got %d allocs/op, expected ≤%d", allocsPerOpInt, maxAllocs)
+		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
+	}
+
+	t.Logf("Append-only ApplyLeafMutations allocations: %d allocs/op (threshold: %d)", allocsPerOpInt, maxAllocs)
+}
+
+// TestShouldNotExceedMixedApplyLeafMutationsAllocationBudget guards the mixed in-memory recompute path.
+// Measures a 1k mutation batch on a 50k tree, excluding setup/build work from the measurement.
+func TestShouldNotExceedMixedApplyLeafMutationsAllocationBudget(t *testing.T) {
+	skipAllocationGuardUnderRace(t)
+
+	const maxAllocs = 100_000
+	const measuredRuns = 12
+	const existingCount = 50_000
+	const updateCount = 400
+	const removeCount = 300
+	const appendCount = 300
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle")
+	store, err := pebble.NewPebbleStore(path)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	tree := NewTree(store)
+
+	stages := make([]string, measuredRuns)
+	for i := range stages {
+		stage := fmt.Sprintf("mixed-%d", i)
+		stages[i] = stage
+		if err := tree.Build(ctx, stage, "testspace", generateTestLeaves(existingCount)); err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+	}
+
+	mutations := make([]LeafMutation, 0, updateCount+removeCount+appendCount)
+	stride := existingCount / (updateCount + removeCount)
+	index := 0
+	for i := 0; i < updateCount; i++ {
+		mutations = append(mutations, LeafMutation{Index: index, Leaf: leaf(fmt.Sprintf("mixed-update-%d", i))})
+		index += stride
+	}
+	for i := 0; i < removeCount; i++ {
+		mutations = append(mutations, LeafMutation{Index: index, Remove: true})
+		index += stride
+	}
+	for i := 0; i < appendCount; i++ {
+		mutations = append(mutations, LeafMutation{Append: true, Leaf: leaf(fmt.Sprintf("mixed-append-%d", i))})
+	}
+
+	runIndex := 0
+	allocsPerOp := testing.AllocsPerRun(measuredRuns, func() {
+		stage := stages[runIndex%len(stages)]
+		runIndex++
+		if _, err := tree.ApplyLeafMutations(ctx, stage, "testspace", mutations); err != nil {
+			t.Fatalf("ApplyLeafMutations failed: %v", err)
+		}
+	})
+	allocsPerOpInt := int64(allocsPerOp)
+	if allocsPerOpInt > maxAllocs {
+		t.Errorf("mixed ApplyLeafMutations allocation regression: got %d allocs/op, expected ≤%d", allocsPerOpInt, maxAllocs)
+		t.Errorf("This indicates a performance regression. Review recent changes or update threshold if intentional.")
+	}
+
+	t.Logf("Mixed ApplyLeafMutations allocations: %d allocs/op (threshold: %d)", allocsPerOpInt, maxAllocs)
+}
+
 // TestShouldNotExceedGetLeavesByIndexAllocationBudget guards against allocation regressions in GetLeavesByIndex.
 // Measures ordered batch reads on a 100K tree.
 func TestShouldNotExceedGetLeavesByIndexAllocationBudget(t *testing.T) {

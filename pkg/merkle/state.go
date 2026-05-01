@@ -66,8 +66,10 @@ type Tree struct {
 	// childBuf and childPKBuf are reused across calls to getChildHashes to eliminate repeated allocations.
 	// CONCURRENCY: SAFE because Tree assumes single-writer model (documented above).
 	// NOT safe for concurrent use - requires external synchronization if needed.
-	childBuf   [][]byte
-	childPKBuf []lexkey.PrimaryKey
+	childBuf        [][]byte
+	childPKBuf      []lexkey.PrimaryKey
+	bulkChildIdxBuf []int
+	bulkChildPKBuf  []lexkey.PrimaryKey
 }
 
 type NodePosition struct {
@@ -145,5 +147,7 @@ func NewTree(store kv.KV, opts ...Option) *Tree {
 	// Pre-allocate reusable buffer
 	m.childBuf = make([][]byte, 0, m.branching)
 	m.childPKBuf = make([]lexkey.PrimaryKey, 0, m.branching)
+	m.bulkChildIdxBuf = make([]int, 0, m.branching*8)
+	m.bulkChildPKBuf = make([]lexkey.PrimaryKey, 0, m.branching*8)
 	return m
 }

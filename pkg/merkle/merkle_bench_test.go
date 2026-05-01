@@ -34,6 +34,43 @@ func benchLeaves(n int) enumerators.Enumerator[Leaf] {
 	return enumerators.Slice(ls)
 }
 
+func appendOnlyMutations(count int, prefix string) []LeafMutation {
+	mutations := make([]LeafMutation, count)
+	for i := range mutations {
+		mutations[i] = LeafMutation{Append: true, Leaf: leaf(fmt.Sprintf("%s-%d", prefix, i))}
+	}
+	return mutations
+}
+
+func mixedMutations(existingCount, updateCount, removeCount, appendCount int, prefix string) []LeafMutation {
+	mutations := make([]LeafMutation, 0, updateCount+removeCount+appendCount)
+	stride := max(1, existingCount/max(1, updateCount+removeCount))
+	index := 0
+
+	for i := 0; i < updateCount; i++ {
+		mutations = append(mutations, LeafMutation{
+			Index: index,
+			Leaf:  leaf(fmt.Sprintf("%s-update-%d", prefix, i)),
+		})
+		index += stride
+	}
+	for i := 0; i < removeCount; i++ {
+		mutations = append(mutations, LeafMutation{
+			Index:  index,
+			Remove: true,
+		})
+		index += stride
+	}
+	for i := 0; i < appendCount; i++ {
+		mutations = append(mutations, LeafMutation{
+			Append: true,
+			Leaf:   leaf(fmt.Sprintf("%s-append-%d", prefix, i)),
+		})
+	}
+
+	return mutations
+}
+
 // BenchmarkBuildMerkle measures merkle tree building performance.
 // Build streams all puts through a single kv.BatchChunks call (chunked by WithBatchSize / default).
 func BenchmarkBuildMerkle(b *testing.B) {
@@ -299,6 +336,163 @@ func BenchmarkApplyLeafMutations_Scale(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				stage := fmt.Sprintf("mut-stage-%d", i)
+
+				b.StopTimer()
+				if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+
+				if _, err := m.ApplyLeafMutations(ctx, stage, "bench", mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyLeafMutations_AppendOnlyScale measures the append-only hot path at different tree sizes.
+// This models projector batches that append a fixed number of leaves into a growing tree.
+func BenchmarkApplyLeafMutations_AppendOnlyScale(b *testing.B) {
+	sizes := []int{1_000, 10_000, 100_000}
+	const appendCount = 90
+
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", n), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			mutations := make([]LeafMutation, appendCount)
+			for i := range mutations {
+				mutations[i] = LeafMutation{Append: true, Leaf: leaf(fmt.Sprintf("append-%d", i))}
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				stage := fmt.Sprintf("append-stage-%d", i)
+
+				b.StopTimer()
+				if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+
+				if _, err := m.ApplyLeafMutations(ctx, stage, "bench", mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyLeafMutations_AppendBatchTargets measures 1k append batches at the tree sizes
+// used by the performance acceptance targets.
+func BenchmarkApplyLeafMutations_AppendBatchTargets(b *testing.B) {
+	sizes := []int{5_000, 50_000, 500_000}
+	const appendCount = 1_000
+
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("existing=%d/appends=%d", n, appendCount), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			mutations := appendOnlyMutations(appendCount, "append-target")
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				stage := fmt.Sprintf("append-target-stage-%d", i)
+
+				b.StopTimer()
+				if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+
+				if _, err := m.ApplyLeafMutations(ctx, stage, "bench", mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyLeafMutations_InitialLoad50k measures a 50k initial load applied as repeated
+// 1k append-only batches against an initially empty tree.
+func BenchmarkApplyLeafMutations_InitialLoad50k(b *testing.B) {
+	const totalLeaves = 50_000
+	const batchSize = 1_000
+	const batchCount = totalLeaves / batchSize
+
+	b.Run(fmt.Sprintf("total=%d/batch=%d", totalLeaves, batchSize), func(b *testing.B) {
+		m := setupBenchMerkle(b)
+		ctx := context.Background()
+		batchMutations := make([][]LeafMutation, batchCount)
+		for i := range batchMutations {
+			batchMutations[i] = appendOnlyMutations(batchSize, fmt.Sprintf("initial-load-%d", i))
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			stage := fmt.Sprintf("initial-load-stage-%d", i)
+			for _, mutations := range batchMutations {
+				if _, err := m.ApplyLeafMutations(ctx, stage, "bench", mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+	})
+}
+
+// BenchmarkMutationSession_InitialLoad50k measures a 50k initial load buffered through a single
+// append-only mutation session and flushed once at the end.
+func BenchmarkMutationSession_InitialLoad50k(b *testing.B) {
+	const totalLeaves = 50_000
+	const batchSize = 1_000
+	const batchCount = totalLeaves / batchSize
+
+	b.Run(fmt.Sprintf("total=%d/batch=%d", totalLeaves, batchSize), func(b *testing.B) {
+		m := setupBenchMerkle(b)
+		ctx := context.Background()
+		batchMutations := make([][]LeafMutation, batchCount)
+		for i := range batchMutations {
+			batchMutations[i] = appendOnlyMutations(batchSize, fmt.Sprintf("session-load-%d", i))
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			stage := fmt.Sprintf("session-load-stage-%d", i)
+			session, err := m.BeginMutationSession(ctx, stage, "bench")
+			if err != nil {
+				b.Fatal(err)
+			}
+			for _, mutations := range batchMutations {
+				if _, err := session.QueueLeafMutations(mutations); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err := session.Flush(ctx); err != nil {
+				b.Fatal(err)
+			}
+			session.Close()
+		}
+	})
+}
+
+// BenchmarkApplyLeafMutations_MixedBatchTargets measures 1k mixed mutation batches at the tree sizes
+// used by the performance acceptance targets.
+func BenchmarkApplyLeafMutations_MixedBatchTargets(b *testing.B) {
+	sizes := []int{5_000, 50_000, 500_000}
+	const updateCount = 400
+	const removeCount = 300
+	const appendCount = 300
+
+	for _, n := range sizes {
+		b.Run(fmt.Sprintf("existing=%d/mixed=%d", n, updateCount+removeCount+appendCount), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			mutations := mixedMutations(n, updateCount, removeCount, appendCount, "mixed-target")
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				stage := fmt.Sprintf("mixed-target-stage-%d", i)
 
 				b.StopTimer()
 				if err := m.Build(ctx, stage, "bench", benchLeaves(n)); err != nil {

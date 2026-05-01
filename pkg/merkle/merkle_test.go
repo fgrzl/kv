@@ -919,6 +919,95 @@ func TestInvariantBatchLeafMutationsEqualsRebuild(t *testing.T) {
 	assert.Equal(t, expectedRoot, mutatedRoot, "batch mutations must match a rebuild with the same final leaves")
 }
 
+func TestInvariantAppendOnlyBatchMutationsEqualsRebuild(t *testing.T) {
+	// Append-only mutations should match a rebuild and return assigned indexes in order.
+
+	// Arrange
+	ctx := context.Background()
+	m := setup(t)
+	stage := "test"
+	space1 := "append-only"
+	space2 := "append-rebuild"
+
+	require.NoError(t, m.Build(ctx, stage, space1, leaves("A", "B", "C", "D", "E")))
+
+	// Act
+	resultIndexes, err := m.ApplyLeafMutations(ctx, stage, space1, []LeafMutation{
+		{Append: true, Leaf: leaf("F")},
+		{Append: true, Leaf: leaf("G")},
+		{Append: true, Leaf: leaf("H")},
+	})
+	require.NoError(t, err)
+
+	// Assert
+	assert.Equal(t, []int{5, 6, 7}, resultIndexes)
+
+	count, err := m.GetLeafCount(ctx, stage, space1)
+	require.NoError(t, err)
+	assert.Equal(t, 8, count)
+
+	for index, ref := range []string{"F", "G", "H"} {
+		leafAtIndex, err := m.GetLeaf(ctx, stage, space1, 5+index)
+		require.NoError(t, err)
+		assert.Equal(t, ref, leafAtIndex.Ref)
+	}
+
+	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	require.NoError(t, err)
+
+	require.NoError(t, m.Build(ctx, stage, space2, leaves("A", "B", "C", "D", "E", "F", "G", "H")))
+	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	require.NoError(t, err)
+
+	assert.Equal(t, expectedRoot, mutatedRoot, "append-only batch mutations must match a rebuild with the same final leaves")
+}
+
+func TestInvariantAppendOnlyMutationSessionEqualsRebuild(t *testing.T) {
+	// An append-only mutation session should assign stable indexes across queued batches and flush to
+	// the same tree state as a rebuild with the final leaf set.
+
+	ctx := context.Background()
+	m := setup(t)
+	stage := "test"
+	space1 := "session-append"
+	space2 := "session-rebuild"
+
+	require.NoError(t, m.Build(ctx, stage, space1, leaves("A", "B", "C", "D", "E")))
+
+	session, err := m.BeginMutationSession(ctx, stage, space1)
+	require.NoError(t, err)
+
+	indexes1, err := session.QueueLeafMutations([]LeafMutation{
+		{Append: true, Leaf: leaf("F")},
+		{Append: true, Leaf: leaf("G")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int{5, 6}, indexes1)
+
+	indexes2, err := session.QueueLeafMutations([]LeafMutation{
+		{Append: true, Leaf: leaf("H")},
+		{Append: true, Leaf: leaf("I")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int{7, 8}, indexes2)
+
+	require.NoError(t, session.Flush(ctx))
+	session.Close()
+
+	count, err := m.GetLeafCount(ctx, stage, space1)
+	require.NoError(t, err)
+	assert.Equal(t, 9, count)
+
+	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	require.NoError(t, err)
+
+	require.NoError(t, m.Build(ctx, stage, space2, leaves("A", "B", "C", "D", "E", "F", "G", "H", "I")))
+	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	require.NoError(t, err)
+
+	assert.Equal(t, expectedRoot, mutatedRoot, "append-only mutation session must match a rebuild with the same final leaves")
+}
+
 func TestInvariantRootHashDeterminism(t *testing.T) {
 	// Root hash must be deterministic for identical leaf sets
 
