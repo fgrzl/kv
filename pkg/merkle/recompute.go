@@ -100,12 +100,6 @@ func (m *Tree) getHash(ctx context.Context, stage, space string, ref NodePositio
 	return hash, item.Value, nil
 }
 
-// getChildHashes retrieves all child hashes for a given parent node.
-// Returns all existing child hashes in order.
-func (m *Tree) getChildHashes(ctx context.Context, stage, space string, level, parentIndex int) ([][]byte, error) {
-	return m.getChildHashesInPartition(ctx, treePartition(stage, space), level, parentIndex)
-}
-
 func (m *Tree) getChildHashesInPartition(ctx context.Context, partition lexkey.LexKey, level, parentIndex int) ([][]byte, error) {
 	// Reuse childBuf to avoid allocation on every call
 	m.childBuf = m.childBuf[:0]
@@ -137,13 +131,6 @@ func (m *Tree) getChildHashesInPartition(ctx context.Context, partition lexkey.L
 
 	return m.childBuf, nil
 }
-
-// loadLevelNodeHashesInOrder loads every stored hash at the given Merkle level in one
-// partition range scan (index order), for bottom-up recomputation without per-parent GetBatch.
-func (m *Tree) loadLevelNodeHashesInOrder(ctx context.Context, stage, space string, level, nodeCount int) ([][]byte, error) {
-	return m.loadLevelNodeHashesInOrderInPartition(ctx, treePartition(stage, space), level, nodeCount)
-}
-
 func (m *Tree) loadLevelNodeHashesInOrderInPartition(ctx context.Context, partition lexkey.LexKey, level, nodeCount int) ([][]byte, error) {
 	if nodeCount <= 0 {
 		return nil, nil

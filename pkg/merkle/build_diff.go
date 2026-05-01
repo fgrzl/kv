@@ -92,11 +92,6 @@ func (m *Tree) collectBuildPutBatchItems(stage, space string, leaves enumerators
 
 	return currNodes, batchItems, actualLeafCount, nil
 }
-
-func (m *Tree) hashNodeLevel(stage, space string, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
-	return m.hashNodeLevelInPartition(treePartition(stage, space), nodes, level)
-}
-
 func (m *Tree) hashNodeLevelInPartition(partition lexkey.LexKey, nodes []Branch, level int) ([]Branch, []*kv.BatchItem) {
 	numGroups := (len(nodes) + m.branching - 1) / m.branching
 	next := make([]Branch, 0, numGroups)
