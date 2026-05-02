@@ -1,6 +1,22 @@
 package merkle
 
-import "github.com/zeebo/blake3"
+import (
+	"sync"
+
+	"github.com/zeebo/blake3"
+)
+
+// hasherPool reduces allocations in hot hashing paths by reusing blake3 hashers.
+var hasherPool = sync.Pool{
+	New: func() interface{} { return blake3.New() },
+}
+
+// cachedPaddingHash and cachedDeletedHash are precomputed once at init time.
+// This avoids recomputing domain-separated constant hashes on every use.
+var (
+	cachedPaddingHash = computeDomainHash(domainPadding, nil)
+	cachedDeletedHash = computeDomainHash(domainDeleted, nil)
+)
 
 // ComputeHash computes the BLAKE3-256 hash of user data (leaf payload).
 func ComputeHash(data []byte) []byte {
@@ -14,26 +30,24 @@ func ComputeHash(data []byte) []byte {
 func computeDomainHash(domain string, data []byte) []byte {
 	h := blake3.New()
 	h.Write([]byte(domain))
-	h.Write(data)
+	if data != nil {
+		h.Write(data)
+	}
 	return h.Sum(nil)
 }
 
-// paddingHash returns the canonical hash for padding nodes.
-func paddingHash() []byte {
-	return computeDomainHash(domainPadding, nil)
-}
-
 // deletedHash returns the canonical hash for deleted leaf markers.
-func deletedHash() []byte {
-	return computeDomainHash(domainDeleted, nil)
-}
+func deletedHash() []byte { return cachedDeletedHash }
 
 // hashByteSlices computes the BLAKE3 hash of multiple byte slices concatenated.
 // Used for internal node hashing (combining child hashes).
 func hashByteSlices(slices [][]byte) []byte {
-	h := blake3.New()
+	h := hasherPool.Get().(*blake3.Hasher)
+	h.Reset()
 	for _, s := range slices {
 		h.Write(s)
 	}
-	return h.Sum(nil)
+	sum := h.Sum(nil)
+	hasherPool.Put(h)
+	return sum
 }

@@ -146,3 +146,47 @@ func TestBuildWithSkipPruneAvoidsRemoveRange(t *testing.T) {
 
 	assert.Equal(t, int64(0), wrap.removeRangeCalls.Load())
 }
+
+func TestUpdateLeafUsesSingleGetBatchForPathRecompute(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle-update-roundtrips")
+	base, err := pebble.NewPebbleStore(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+
+	wrap := newCountingKV(base)
+	tree := NewTree(wrap)
+	require.NoError(t, tree.Build(ctx, "st", "sp", benchLeaves(16)))
+
+	getBatchBefore := wrap.getBatchCalls.Load()
+	batchBefore := wrap.batchCalls.Load()
+	putBefore := wrap.putCalls.Load()
+	require.NoError(t, tree.UpdateLeaf(ctx, "st", "sp", 9, leaf("updated-09")))
+
+	assert.Equal(t, int64(1), wrap.getBatchCalls.Load()-getBatchBefore, "UpdateLeaf should prefetch all recompute siblings in one GetBatch")
+	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "UpdateLeaf should persist all recomputed parents and root in one Batch")
+	assert.Equal(t, int64(1), wrap.putCalls.Load()-putBefore, "UpdateLeaf should only Put the leaf directly")
+}
+
+func TestAddLeafStableHeightUsesSingleGetBatchForPathRecompute(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "merkle-add-roundtrips")
+	base, err := pebble.NewPebbleStore(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+
+	wrap := newCountingKV(base)
+	tree := NewTree(wrap)
+	require.NoError(t, tree.Build(ctx, "st", "sp", benchLeaves(3)))
+
+	getBatchBefore := wrap.getBatchCalls.Load()
+	batchBefore := wrap.batchCalls.Load()
+	putBefore := wrap.putCalls.Load()
+	index, err := tree.AddLeaf(ctx, "st", "sp", leaf("added-03"))
+	require.NoError(t, err)
+
+	assert.Equal(t, 3, index)
+	assert.Equal(t, int64(1), wrap.getBatchCalls.Load()-getBatchBefore, "stable-height AddLeaf should prefetch all recompute siblings in one GetBatch")
+	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "stable-height AddLeaf should persist recomputed parents and root in one Batch")
+	assert.Equal(t, int64(2), wrap.putCalls.Load()-putBefore, "stable-height AddLeaf should Put the leaf and leaf-count metadata directly")
+}

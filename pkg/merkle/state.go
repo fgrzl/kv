@@ -3,7 +3,6 @@ package merkle
 import (
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
@@ -11,14 +10,6 @@ import (
 )
 
 var tracer = otel.Tracer("github.com/fgrzl/kv/merkle")
-
-// leafPool reduces allocations for Leaf structs during JSON unmarshaling in hot paths.
-// Used in getHash() to avoid per-read allocations during tree traversal.
-var leafPool = sync.Pool{
-	New: func() interface{} {
-		return &Leaf{}
-	},
-}
 
 // Constants for internal keys and metadata.
 const (

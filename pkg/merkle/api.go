@@ -2,7 +2,6 @@ package merkle
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -144,7 +143,7 @@ func (m *Tree) GetLeaf(ctx context.Context, stage, space string, leafIndex int) 
 
 	leaf, err := decodeLeafValue(item.Value)
 	if err != nil {
-		return Leaf{}, fmt.Errorf("failed to unmarshal leaf: %w", err)
+		return Leaf{}, fmt.Errorf("failed to decode leaf: %w", err)
 	}
 	return leaf, nil
 }
@@ -174,7 +173,7 @@ func (m *Tree) EnumerateLeaves(ctx context.Context, stage, space string) enumera
 			}
 			leaf, err := decodeLeafValue(item.Value)
 			if err != nil {
-				return Leaf{}, fmt.Errorf("unmarshal leaf in enumeration: %w", err)
+				return Leaf{}, fmt.Errorf("decode leaf in enumeration: %w", err)
 			}
 			return leaf, nil
 		},
@@ -204,17 +203,24 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 
 	slog.DebugContext(ctx, "updating leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
 
-	// Persist the updated leaf
-	val, err := json.Marshal(newLeaf)
+	leafCount, err := m.GetLeafCount(ctx, stage, space)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal leaf", "stage", stage, "space", space, "err", err)
+		slog.ErrorContext(ctx, "failed to get leaf count", "stage", stage, "space", space, "err", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	if leafIndex >= leafCount {
+		err := fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
+		slog.ErrorContext(ctx, "leaf index out of bounds", "stage", stage, "space", space, "leafIndex", leafIndex, "leafCount", leafCount)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
+	// Persist the updated leaf
 	pkVal := nodePK(stage, space, 0, leafIndex)
-	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
+	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: encodeLeafValue(newLeaf)}); err != nil {
 		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -222,7 +228,7 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 	}
 
 	// Recompute path to root
-	if err := m.recomputePathToRoot(ctx, stage, space, leafIndex); err != nil {
+	if err := m.recomputePathToRootWithLeafHash(ctx, stage, space, leafIndex, leafCount, newLeaf.Hash); err != nil {
 		slog.ErrorContext(ctx, "failed to recompute path to root", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -268,16 +274,8 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 	}
 
 	// Persist the new leaf
-	val, err := json.Marshal(newLeaf)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal leaf", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, err
-	}
-
 	pkVal := nodePK(stage, space, 0, leafCount)
-	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
+	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: encodeLeafValue(newLeaf)}); err != nil {
 		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -307,7 +305,7 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 	}
 
 	// Recompute affected paths
-	if err := m.recomputeAffectedNodes(ctx, stage, space, leafCount, newLeafCount); err != nil {
+	if err := m.recomputeAffectedNodes(ctx, stage, space, leafCount, newLeafCount, newLeaf.Hash); err != nil {
 		slog.ErrorContext(ctx, "failed to recompute affected nodes", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

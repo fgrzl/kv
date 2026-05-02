@@ -27,11 +27,15 @@ func setupBenchMerkle(b *testing.B) *Tree {
 }
 
 func benchLeaves(n int) enumerators.Enumerator[Leaf] {
+	return enumerators.Slice(benchLeafSlice(n))
+}
+
+func benchLeafSlice(n int) []Leaf {
 	ls := make([]Leaf, n)
 	for i := 0; i < n; i++ {
 		ls[i] = leaf(fmt.Sprintf("leaf-%d", i))
 	}
-	return enumerators.Slice(ls)
+	return ls
 }
 
 func appendOnlyMutations(count int, prefix string) []LeafMutation {
@@ -77,12 +81,12 @@ func BenchmarkBuildMerkle(b *testing.B) {
 	m := setupBenchMerkle(b)
 	ctx := context.Background()
 
-	leaves := benchLeaves(100) // 100 leaves
+	leaves := benchLeafSlice(100)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		stage := fmt.Sprintf("stage-%d", i)
-		if err := m.Build(ctx, stage, "bench", leaves); err != nil {
+		if err := m.Build(ctx, stage, "bench", enumerators.Slice(leaves)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -97,12 +101,12 @@ func BenchmarkBuildMerkle_Scale(b *testing.B) {
 		b.Run(fmt.Sprintf("leaves=%d", n), func(b *testing.B) {
 			m := setupBenchMerkle(b)
 			ctx := context.Background()
-			leaves := benchLeaves(n)
+			leaves := benchLeafSlice(n)
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				stage := fmt.Sprintf("stage-%d", i)
-				if err := m.Build(ctx, stage, "bench", leaves); err != nil {
+				if err := m.Build(ctx, stage, "bench", enumerators.Slice(leaves)); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -149,6 +153,33 @@ func BenchmarkUpdateLeaf(b *testing.B) {
 		if err := m.UpdateLeaf(ctx, "bench-stage", "bench", idx, newLeaf); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BenchmarkUpdateLeaf_PebbleDepthScale keeps Pebble in the loop while showing how
+// surgical update cost grows with tree depth.
+func BenchmarkUpdateLeaf_PebbleDepthScale(b *testing.B) {
+	sizes := []int{1_000, 10_000, 100_000}
+
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", size), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			stage := fmt.Sprintf("update-depth-%d", size)
+			if err := m.Build(ctx, stage, "bench", benchLeaves(size)); err != nil {
+				b.Fatal(err)
+			}
+			updatedLeaf := leaf(fmt.Sprintf("updated-%d", size))
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				idx := i % size
+				if err := m.UpdateLeaf(ctx, stage, "bench", idx, updatedLeaf); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -238,17 +269,43 @@ func BenchmarkRemoveLeaf(b *testing.B) {
 	}
 }
 
+// BenchmarkRemoveLeaf_PebbleDepthScale keeps Pebble in the loop while showing how
+// soft-delete cost grows with tree depth.
+func BenchmarkRemoveLeaf_PebbleDepthScale(b *testing.B) {
+	sizes := []int{1_000, 10_000, 100_000}
+
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("leaves=%d", size), func(b *testing.B) {
+			m := setupBenchMerkle(b)
+			ctx := context.Background()
+			stage := fmt.Sprintf("remove-depth-%d", size)
+			if err := m.Build(ctx, stage, "bench", benchLeaves(size)); err != nil {
+				b.Fatal(err)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				idx := i % size
+				if err := m.RemoveLeaf(ctx, stage, "bench", idx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkDiffIdentical measures diff performance when trees are identical (fast path).
 // Verifies root-hash short-circuiting and early-exit correctness.
 func BenchmarkDiffIdentical(b *testing.B) {
 	m := setupBenchMerkle(b)
 	ctx := context.Background()
 
-	leaves := benchLeaves(5_000)
-	if err := m.Build(ctx, "prev", "bench", leaves); err != nil {
+	leaves := benchLeafSlice(5_000)
+	if err := m.Build(ctx, "prev", "bench", enumerators.Slice(leaves)); err != nil {
 		b.Fatal(err)
 	}
-	if err := m.Build(ctx, "curr", "bench", leaves); err != nil {
+	if err := m.Build(ctx, "curr", "bench", enumerators.Slice(leaves)); err != nil {
 		b.Fatal(err)
 	}
 

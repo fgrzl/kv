@@ -70,10 +70,3 @@ func metaPKInPartition(partition lexkey.LexKey, metaName string) lexkey.PrimaryK
 		lexkey.Encode(metaPrefix, metaName),
 	)
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

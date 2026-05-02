@@ -3,12 +3,12 @@ package merkle
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
+	"github.com/zeebo/blake3"
 )
 
 // collectBuildPutBatchItems materializes all Put operations for a full tree build.
@@ -20,13 +20,9 @@ func (m *Tree) collectBuildPutBatchItems(stage, space string, leaves enumerators
 	index := 0
 
 	if err := enumerators.ForEach(leaves, func(leaf Leaf) error {
-		val, marshalErr := json.Marshal(leaf)
-		if marshalErr != nil {
-			return marshalErr
-		}
 		batchItems = append(batchItems, &kv.BatchItem{
 			PK:    nodePKInPartition(partition, 0, index),
-			Value: val,
+			Value: encodeLeafValue(leaf),
 			Op:    kv.Put,
 		})
 		currNodes = append(currNodes, Branch{Hash: leaf.Hash, Level: 0, Index: index})
@@ -41,19 +37,13 @@ func (m *Tree) collectBuildPutBatchItems(stage, space string, leaves enumerators
 	actualLeafCount = len(currNodes)
 
 	for len(currNodes)%m.branching != 0 {
-		hash := paddingHash()
-		leaf := Leaf{Hash: hash}
-		val, marshalErr := json.Marshal(leaf)
-		if marshalErr != nil {
-			return nil, nil, 0, marshalErr
-		}
 		idx := len(currNodes)
 		batchItems = append(batchItems, &kv.BatchItem{
 			PK:    nodePKInPartition(partition, 0, idx),
-			Value: val,
+			Value: cachedPaddingLeafVal,
 			Op:    kv.Put,
 		})
-		currNodes = append(currNodes, Branch{Hash: hash, Level: 0, Index: idx})
+		currNodes = append(currNodes, Branch{Hash: cachedPaddingHash, Level: 0, Index: idx})
 	}
 
 	nodes := currNodes
@@ -115,11 +105,14 @@ func (m *Tree) commitBatchIfNeeded(ctx context.Context, batch []*kv.BatchItem) e
 }
 
 func hashNodes(nodes []Branch) []byte {
-	hashes := make([][]byte, len(nodes))
-	for i, n := range nodes {
-		hashes[i] = n.Hash
+	h := hasherPool.Get().(*blake3.Hasher)
+	h.Reset()
+	for _, n := range nodes {
+		h.Write(n.Hash)
 	}
-	return hashByteSlices(hashes)
+	sum := h.Sum(nil)
+	hasherPool.Put(h)
+	return sum
 }
 
 func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodePosition) enumerators.Enumerator[Leaf] {

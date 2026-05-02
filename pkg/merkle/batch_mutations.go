@@ -2,7 +2,6 @@ package merkle
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -97,14 +96,9 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 			appendCount++
 			resultIndexes[i] = index
 
-			val, marshalErr := json.Marshal(mutation.Leaf)
-			if marshalErr != nil {
-				err = fmt.Errorf("marshal append mutation %d: %w", i, marshalErr)
-				return nil, err
-			}
 			finalWrites[index] = &kv.BatchItem{
 				PK:    nodePKInPartition(partition, 0, index),
-				Value: val,
+				Value: encodeLeafValue(mutation.Leaf),
 				Op:    kv.Put,
 			}
 			changedLeafHashes[index] = mutation.Leaf.Hash
@@ -122,18 +116,12 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 			index := mutation.Index
 			resultIndexes[i] = index
 
-			deletedLeaf := Leaf{Ref: "", Hash: deletedHash()}
-			val, marshalErr := json.Marshal(deletedLeaf)
-			if marshalErr != nil {
-				err = fmt.Errorf("marshal remove mutation %d: %w", i, marshalErr)
-				return nil, err
-			}
 			finalWrites[index] = &kv.BatchItem{
 				PK:    nodePKInPartition(partition, 0, index),
-				Value: val,
+				Value: encodeLeafValue(Leaf{Hash: cachedDeletedHash}),
 				Op:    kv.Put,
 			}
-			changedLeafHashes[index] = deletedLeaf.Hash
+			changedLeafHashes[index] = cachedDeletedHash
 
 		default:
 			if mutation.Index < 0 {
@@ -152,14 +140,9 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 			index := mutation.Index
 			resultIndexes[i] = index
 
-			val, marshalErr := json.Marshal(mutation.Leaf)
-			if marshalErr != nil {
-				err = fmt.Errorf("marshal update mutation %d: %w", i, marshalErr)
-				return nil, err
-			}
 			finalWrites[index] = &kv.BatchItem{
 				PK:    nodePKInPartition(partition, 0, index),
-				Value: val,
+				Value: encodeLeafValue(mutation.Leaf),
 				Op:    kv.Put,
 			}
 			changedLeafHashes[index] = mutation.Leaf.Hash
@@ -180,22 +163,14 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 	currentIndexes := append(make([]int, 0, len(leafWriteIndexes)+m.branching), leafWriteIndexes...)
 	if appendCount > 0 {
 		paddedCount := m.getPaddedCount(newLeafCount)
-		if paddedCount != newLeafCount {
-			paddingLeaf := Leaf{Hash: paddingHash()}
-			paddingValue, marshalErr := json.Marshal(paddingLeaf)
-			if marshalErr != nil {
-				err = marshalErr
-				return nil, err
-			}
-			for index := newLeafCount; index < paddedCount; index++ {
-				leafItems = append(leafItems, &kv.BatchItem{
-					PK:    nodePKInPartition(partition, 0, index),
-					Value: paddingValue,
-					Op:    kv.Put,
-				})
-				changedLeafHashes[index] = paddingLeaf.Hash
-				currentIndexes = append(currentIndexes, index)
-			}
+		for index := newLeafCount; index < paddedCount; index++ {
+			leafItems = append(leafItems, &kv.BatchItem{
+				PK:    nodePKInPartition(partition, 0, index),
+				Value: cachedPaddingLeafVal,
+				Op:    kv.Put,
+			})
+			changedLeafHashes[index] = cachedPaddingHash
+			currentIndexes = append(currentIndexes, index)
 		}
 	}
 
@@ -279,36 +254,23 @@ func (m *Tree) applyAppendOnlyMutations(ctx context.Context, stage, space string
 		index := leafCount + i
 		resultIndexes[i] = index
 
-		val, err := json.Marshal(mutation.Leaf)
-		if err != nil {
-			return nil, fmt.Errorf("marshal append mutation %d: %w", i, err)
-		}
-
 		leafItems = append(leafItems, &kv.BatchItem{
 			PK:    nodePKInPartition(partition, 0, index),
-			Value: val,
+			Value: encodeLeafValue(mutation.Leaf),
 			Op:    kv.Put,
 		})
 		currentHashes[index] = mutation.Leaf.Hash
 		currentIndexes = append(currentIndexes, index)
 	}
 
-	if paddedCount > newLeafCount {
-		paddingLeaf := Leaf{Hash: paddingHash()}
-		paddingValue, err := json.Marshal(paddingLeaf)
-		if err != nil {
-			return nil, fmt.Errorf("marshal padding leaf: %w", err)
-		}
-
-		for index := newLeafCount; index < paddedCount; index++ {
-			leafItems = append(leafItems, &kv.BatchItem{
-				PK:    nodePKInPartition(partition, 0, index),
-				Value: paddingValue,
-				Op:    kv.Put,
-			})
-			currentHashes[index] = paddingLeaf.Hash
-			currentIndexes = append(currentIndexes, index)
-		}
+	for index := newLeafCount; index < paddedCount; index++ {
+		leafItems = append(leafItems, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, 0, index),
+			Value: cachedPaddingLeafVal,
+			Op:    kv.Put,
+		})
+		currentHashes[index] = cachedPaddingHash
+		currentIndexes = append(currentIndexes, index)
 	}
 
 	rootHash, internalItems, err := m.computeInternalNodeWrites(ctx, partition, paddedCount, currentHashes, currentIndexes)

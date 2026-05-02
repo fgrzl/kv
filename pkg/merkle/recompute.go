@@ -2,7 +2,6 @@ package merkle
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/fgrzl/enumerators"
@@ -10,72 +9,146 @@ import (
 	"github.com/fgrzl/lexkey"
 )
 
-// recomputePathToRoot recomputes all parent hashes from a leaf to the root.
-// PERFORMANCE: O(log N) nodes updated = tree height = log_branching(padded_leaf_count)
-func (m *Tree) recomputePathToRoot(ctx context.Context, stage, space string, leafIndex int) error {
-	leafCount, err := m.GetLeafCount(ctx, stage, space)
-	if err != nil {
-		return fmt.Errorf("get leaf count in recomputePathToRoot: %w", err)
-	}
-
-	return m.recomputePathToRootWithLeafCount(ctx, stage, space, leafIndex, leafCount)
+type pathReadLevel struct {
+	parentLevel    int
+	childLevel     int
+	parentIndex    int
+	pathChildIndex int
+	childHashes    [][]byte
 }
 
-func (m *Tree) recomputePathToRootWithLeafCount(ctx context.Context, stage, space string, leafIndex, leafCount int) error {
+type pathReadSlot struct {
+	levelOffset int
+	childOffset int
+	childLevel  int
+}
+
+func (m *Tree) recomputePathToRootWithLeafHash(ctx context.Context, stage, space string, leafIndex, leafCount int, leafHash []byte) error {
 	if leafIndex >= leafCount {
 		return fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
 	}
 	partition := treePartition(stage, space)
 
-	// Calculate max level from current tree structure
 	paddedLeafCount := m.getPaddedCount(leafCount)
 	maxLevel := m.calculateMaxLevel(paddedLeafCount)
-	var rootHash []byte
-
-	// Recompute from leaf's parent up to root (O(log N) operations)
-	currentIndex := leafIndex
-	for level := 1; level <= maxLevel; level++ {
-		parentIndex := currentIndex / m.branching
-
-		// Get all sibling hashes for this parent
-		childHashes, err := m.getChildHashesInPartition(ctx, partition, level-1, parentIndex)
-		if err != nil {
-			return err
-		}
-
-		// Compute parent hash
-		parentHash := hashByteSlices(childHashes)
-
-		// Store parent node
-		pkVal := nodePKInPartition(partition, level, parentIndex)
-		if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: parentHash}); err != nil {
-			return err
-		}
-		if level == maxLevel {
-			rootHash = parentHash
-		}
-
-		currentIndex = parentIndex
-	}
-
 	if maxLevel == 0 {
-		var err error
-		rootHash, _, err = m.getHash(ctx, stage, space, NodePosition{Level: 0, Index: 0})
+		rootHash := leafHash
+		if rootHash == nil {
+			var err error
+			rootHash, _, err = m.getHash(ctx, stage, space, NodePosition{Level: 0, Index: 0})
+			if err != nil {
+				return fmt.Errorf("get root hash for single-leaf tree: %w", err)
+			}
+		}
+		if rootHash == nil {
+			return fmt.Errorf("%w: root hash is nil at level %d for %s/%s", errInvalidTreeState, maxLevel, stage, space)
+		}
+		return m.store.Batch(ctx, []*kv.BatchItem{{
+			PK:    rootPKInPartition(partition),
+			Value: rootHash,
+			Op:    kv.Put,
+		}})
+	}
+
+	levelNodeCounts := m.levelNodeCounts(paddedLeafCount)
+	pathLevels, readKeys, readSlots := m.planPathReads(partition, levelNodeCounts, leafIndex, leafHash != nil)
+	if len(readKeys) > 0 {
+		results, err := m.store.GetBatch(ctx, readKeys...)
 		if err != nil {
-			return fmt.Errorf("get root hash for single-leaf tree: %w", err)
+			return fmt.Errorf("store get batch for recompute path: %w", err)
+		}
+		for resultIndex, result := range results {
+			if !result.Found || result.Item == nil {
+				continue
+			}
+			readSlot := readSlots[resultIndex]
+			childHash, err := m.hashFromStoredValue(readSlot.childLevel, result.Item.Value)
+			if err != nil {
+				return err
+			}
+			pathLevels[readSlot.levelOffset].childHashes[readSlot.childOffset] = childHash
 		}
 	}
 
+	writes := make([]*kv.BatchItem, 0, maxLevel+1)
+	var rootHash []byte
+	pendingHash := leafHash
+	for _, pathLevel := range pathLevels {
+		m.childBuf = m.childBuf[:0]
+		for childOffset, childHash := range pathLevel.childHashes {
+			childIndex := pathLevel.parentIndex*m.branching + childOffset
+			if childIndex == pathLevel.pathChildIndex && pendingHash != nil {
+				m.childBuf = append(m.childBuf, pendingHash)
+				continue
+			}
+			if childHash != nil {
+				m.childBuf = append(m.childBuf, childHash)
+			}
+		}
+
+		parentHash := hashByteSlices(m.childBuf)
+		writes = append(writes, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, pathLevel.parentLevel, pathLevel.parentIndex),
+			Value: parentHash,
+			Op:    kv.Put,
+		})
+
+		pendingHash = parentHash
+		rootHash = parentHash
+	}
 	if rootHash == nil {
 		return fmt.Errorf("%w: root hash is nil at level %d for %s/%s", errInvalidTreeState, maxLevel, stage, space)
 	}
 
-	pkVal := rootPKInPartition(partition)
-	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: rootHash}); err != nil {
-		return fmt.Errorf("store root hash for %s/%s: %w", stage, space, err)
+	writes = append(writes, &kv.BatchItem{
+		PK:    rootPKInPartition(partition),
+		Value: rootHash,
+		Op:    kv.Put,
+	})
+
+	return m.store.Batch(ctx, writes)
+}
+
+func (m *Tree) planPathReads(partition lexkey.LexKey, levelNodeCounts []int, leafIndex int, hasLeafHash bool) ([]pathReadLevel, []lexkey.PrimaryKey, []pathReadSlot) {
+	maxLevel := len(levelNodeCounts) - 1
+	pathLevels := make([]pathReadLevel, 0, maxLevel)
+	readKeys := make([]lexkey.PrimaryKey, 0, maxLevel*max(1, m.branching-1))
+	readSlots := make([]pathReadSlot, 0, cap(readKeys))
+
+	currentIndex := leafIndex
+	for parentLevel := 1; parentLevel <= maxLevel; parentLevel++ {
+		childLevel := parentLevel - 1
+		parentIndex := currentIndex / m.branching
+		pathChildIndex := currentIndex
+		childHashes := make([][]byte, m.branching)
+
+		for childOffset := 0; childOffset < m.branching; childOffset++ {
+			childIndex := parentIndex*m.branching + childOffset
+			if childIndex >= levelNodeCounts[childLevel] {
+				break
+			}
+			if childIndex == pathChildIndex && (parentLevel > 1 || hasLeafHash) {
+				continue
+			}
+			readKeys = append(readKeys, nodePKInPartition(partition, childLevel, childIndex))
+			readSlots = append(readSlots, pathReadSlot{
+				levelOffset: len(pathLevels),
+				childOffset: childOffset,
+				childLevel:  childLevel,
+			})
+		}
+
+		pathLevels = append(pathLevels, pathReadLevel{
+			parentLevel:    parentLevel,
+			childLevel:     childLevel,
+			parentIndex:    parentIndex,
+			pathChildIndex: pathChildIndex,
+			childHashes:    childHashes,
+		})
+		currentIndex = parentIndex
 	}
 
-	return nil
+	return pathLevels, readKeys, readSlots
 }
 
 // getHash retrieves the stored hash and raw value for a node position.
@@ -100,37 +173,6 @@ func (m *Tree) getHash(ctx context.Context, stage, space string, ref NodePositio
 	return hash, item.Value, nil
 }
 
-func (m *Tree) getChildHashesInPartition(ctx context.Context, partition lexkey.LexKey, level, parentIndex int) ([][]byte, error) {
-	// Reuse childBuf to avoid allocation on every call
-	m.childBuf = m.childBuf[:0]
-	m.childPKBuf = m.childPKBuf[:0]
-
-	for i := 0; i < m.branching; i++ {
-		childIndex := parentIndex*m.branching + i
-		m.childPKBuf = append(m.childPKBuf, nodePKInPartition(partition, level, childIndex))
-	}
-
-	results, err := m.store.GetBatch(ctx, m.childPKBuf...)
-	if err != nil {
-		return nil, fmt.Errorf("store get batch: %w", err)
-	}
-
-	for _, result := range results {
-		if !result.Found || result.Item == nil {
-			continue
-		}
-
-		childHash, err := m.hashFromStoredValue(level, result.Item.Value)
-		if err != nil {
-			return nil, err
-		}
-		if childHash != nil {
-			m.childBuf = append(m.childBuf, childHash)
-		}
-	}
-
-	return m.childBuf, nil
-}
 func (m *Tree) loadLevelNodeHashesInOrderInPartition(ctx context.Context, partition lexkey.LexKey, level, nodeCount int) ([][]byte, error) {
 	if nodeCount <= 0 {
 		return nil, nil
@@ -241,20 +283,11 @@ func (m *Tree) ensurePaddingExists(ctx context.Context, stage, space string, sta
 	}
 	partition := treePartition(stage, space)
 
-	// INVARIANT: Padding aligns leaf count to branching factor for balanced tree structure
-	paddingLeaf := Leaf{Hash: paddingHash()}
-	val, err := json.Marshal(paddingLeaf)
-	if err != nil {
-		return err
-	}
-
 	// Batch padding creation for better performance
 	batch := make([]*kv.BatchItem, 0, end-start)
 	for i := start; i < end; i++ {
 		pkVal := nodePKInPartition(partition, 0, i)
-		// During AddLeaf, we know padding doesn't exist, so skip the Get check
-		// This is safe because we control when padding is created
-		batch = append(batch, &kv.BatchItem{PK: pkVal, Value: val, Op: kv.Put})
+		batch = append(batch, &kv.BatchItem{PK: pkVal, Value: cachedPaddingLeafVal, Op: kv.Put})
 	}
 
 	if len(batch) > 0 {
@@ -264,7 +297,7 @@ func (m *Tree) ensurePaddingExists(ctx context.Context, stage, space string, sta
 }
 
 // recomputeAffectedNodes recomputes all nodes affected by adding a new leaf.
-func (m *Tree) recomputeAffectedNodes(ctx context.Context, stage, space string, oldCount, newCount int) error {
+func (m *Tree) recomputeAffectedNodes(ctx context.Context, stage, space string, oldCount, newCount int, newLeafHash []byte) error {
 	// Check if tree structure changed (new level added or empty tree)
 	oldMaxLevel := m.calculateMaxLevel(m.getPaddedCount(oldCount))
 	newMaxLevel := m.calculateMaxLevel(m.getPaddedCount(newCount))
@@ -274,7 +307,7 @@ func (m *Tree) recomputeAffectedNodes(ctx context.Context, stage, space string, 
 	}
 
 	// Otherwise just update the path from the new leaf
-	return m.recomputePathToRootWithLeafCount(ctx, stage, space, oldCount, newCount)
+	return m.recomputePathToRootWithLeafHash(ctx, stage, space, oldCount, newCount, newLeafHash)
 }
 
 // recomputeAllInternalNodes rebuilds all internal nodes from current leaves.
