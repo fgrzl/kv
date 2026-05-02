@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -14,6 +15,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// rangeLoadThreshold controls when loadMissingNodeHashesInPartition switches from
+// point lookups (GetBatch) to a partition range scan (Enumerate). Below the threshold
+// the OData filter for a batched read is cheaper than scanning + deserializing extra
+// rows; above it the range scan amortizes much better. The value was chosen to align
+// with Azure Table Storage's 100-row per-batch ceiling; tune via benchmark before
+// changing.
 const rangeLoadThreshold = 32
 
 // LeafMutation describes one ordered, index-based mutation against a Merkle tree leaf.
@@ -196,7 +203,7 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 		metadataItems = append(metadataItems,
 			&kv.BatchItem{
 				PK:    metaPKInPartition(partition, leafCountKey),
-				Value: []byte(fmt.Sprintf("%d", newLeafCount)),
+				Value: strconv.AppendInt(nil, int64(newLeafCount), 10),
 				Op:    kv.Put,
 			},
 		)
@@ -205,7 +212,7 @@ func (m *Tree) ApplyLeafMutations(ctx context.Context, stage, space string, muta
 			metadataItems = append(metadataItems,
 				&kv.BatchItem{
 					PK:    metaPKInPartition(partition, maxLevelKey),
-					Value: []byte(fmt.Sprintf("%d", newMaxLevel)),
+					Value: strconv.AppendInt(nil, int64(newMaxLevel), 10),
 					Op:    kv.Put,
 				},
 			)
@@ -293,7 +300,7 @@ func (m *Tree) applyAppendOnlyMutations(ctx context.Context, stage, space string
 		},
 		&kv.BatchItem{
 			PK:    metaPKInPartition(partition, leafCountKey),
-			Value: []byte(fmt.Sprintf("%d", newLeafCount)),
+			Value: strconv.AppendInt(nil, int64(newLeafCount), 10),
 			Op:    kv.Put,
 		},
 	)
@@ -400,7 +407,22 @@ func changedParentIndexesFromSorted(sortedIndexes []int, branching int) []int {
 	return parentIndexes
 }
 
+// loadMissingNodeHashesInPartition resolves child hashes that aren't already in
+// knownHashes by either point-batched gets or range scans, picked per contiguous
+// range against rangeLoadThreshold.
+//
+// CONCURRENCY: This method mutates m.bulkChildIdxBuf and m.bulkChildPKBuf. The
+// Tree type is documented as single-writer; the buffers are also reused across
+// recursive level calls within computeInternalNodeWrites and must not be touched
+// concurrently. The buffers must be empty on entry.
 func (m *Tree) loadMissingNodeHashesInPartition(ctx context.Context, partition lexkey.LexKey, level, nodeCount int, parentIndexes []int, knownHashes map[int][]byte) (map[int][]byte, error) {
+	if len(m.bulkChildIdxBuf) != 0 || len(m.bulkChildPKBuf) != 0 {
+		return nil, fmt.Errorf("load missing node hashes: bulk child buffers not empty on entry")
+	}
+	defer func() {
+		m.bulkChildIdxBuf = m.bulkChildIdxBuf[:0]
+		m.bulkChildPKBuf = m.bulkChildPKBuf[:0]
+	}()
 	m.bulkChildIdxBuf = m.bulkChildIdxBuf[:0]
 	m.bulkChildPKBuf = m.bulkChildPKBuf[:0]
 	for _, parentIndex := range parentIndexes {
@@ -508,11 +530,4 @@ func contiguousRanges(sortedIndexes []int) []intRange {
 	}
 	ranges = append(ranges, intRange{start: start, end: end})
 	return ranges
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

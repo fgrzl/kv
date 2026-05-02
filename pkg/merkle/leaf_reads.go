@@ -4,24 +4,40 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/fgrzl/lexkey"
 )
 
 // cachedPaddingLeafVal is the precomputed binary encoding of the canonical padding leaf.
 // Shared read-only across all padding writes; avoids per-call encoding.
-var cachedPaddingLeafVal = encodeLeafValue(Leaf{Hash: cachedPaddingHash})
+var cachedPaddingLeafVal = mustEncodeLeafValue(Leaf{Hash: cachedPaddingHash})
+
+func mustEncodeLeafValue(leaf Leaf) []byte {
+	v, err := encodeLeafValueErr(leaf)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
 
 // encodeLeafValue encodes a Leaf to its compact binary wire format.
 // Format: [4-byte uint32 LE: ref length][ref bytes][hash bytes]
-// This replaces JSON encoding for ~5-10x faster serialization.
+// Panics if leaf.Ref length exceeds math.MaxUint32 (impossible on practical inputs).
 func encodeLeafValue(leaf Leaf) []byte {
+	return mustEncodeLeafValue(leaf)
+}
+
+func encodeLeafValueErr(leaf Leaf) ([]byte, error) {
+	if len(leaf.Ref) > math.MaxUint32 {
+		return nil, fmt.Errorf("leaf ref length %d exceeds uint32 max", len(leaf.Ref))
+	}
 	refLen := uint32(len(leaf.Ref))
 	buf := make([]byte, 4+int(refLen)+len(leaf.Hash))
 	binary.LittleEndian.PutUint32(buf, refLen)
 	copy(buf[4:], leaf.Ref)
 	copy(buf[4+int(refLen):], leaf.Hash)
-	return buf
+	return buf, nil
 }
 
 // decodeLeafValue decodes a Leaf from its compact binary wire format.
@@ -31,7 +47,7 @@ func decodeLeafValue(value []byte) (Leaf, error) {
 		return Leaf{}, fmt.Errorf("leaf value too short: %d bytes", len(value))
 	}
 	refLen := int(binary.LittleEndian.Uint32(value))
-	if 4+refLen > len(value) {
+	if refLen > len(value)-4 {
 		return Leaf{}, fmt.Errorf("leaf value corrupted: ref length %d exceeds data size %d", refLen, len(value))
 	}
 	hash := make([]byte, len(value)-(4+refLen))

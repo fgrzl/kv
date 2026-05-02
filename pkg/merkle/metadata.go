@@ -3,16 +3,11 @@ package merkle
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 
 	"github.com/fgrzl/kv"
 )
-
-// setLeafCountMetadata stores the actual leaf count (excluding padding).
-func (m *Tree) setLeafCountMetadata(ctx context.Context, stage, space string, count int) error {
-	pkVal := metaPK(stage, space, leafCountKey)
-	val := []byte(fmt.Sprintf("%d", count))
-	return m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val})
-}
 
 // getLeafCountMetadata retrieves the actual leaf count from metadata.
 func (m *Tree) getLeafCountMetadata(ctx context.Context, stage, space string) (int, error) {
@@ -22,16 +17,13 @@ func (m *Tree) getLeafCountMetadata(ctx context.Context, stage, space string) (i
 		return 0, fmt.Errorf("get leaf count metadata for %s/%s: %w", stage, space, err)
 	}
 	if item == nil {
-		return 0, nil // No metadata means empty tree
+		return 0, nil
 	}
-	var count int
-	if _, err := fmt.Sscanf(string(item.Value), "%d", &count); err != nil {
-		return 0, fmt.Errorf("parse leaf count metadata for %s/%s: %w", stage, space, err)
+	count, err := strconv.ParseUint(string(item.Value), 10, 63)
+	if err != nil {
+		return 0, fmt.Errorf("%w: parse leaf count for %s/%s: %v", errCorruptedMetadata, stage, space, err)
 	}
-	if count < 0 {
-		return 0, fmt.Errorf("%w: negative leaf count %d for %s/%s", errCorruptedMetadata, count, stage, space)
-	}
-	return count, nil
+	return int(count), nil
 }
 
 // getMaxLevelMetadata retrieves the maximum tree level from metadata.
@@ -45,19 +37,23 @@ func (m *Tree) getMaxLevelMetadata(ctx context.Context, stage, space string) (le
 	if item == nil {
 		return 0, false, nil
 	}
-	if _, err := fmt.Sscanf(string(item.Value), "%d", &level); err != nil {
-		return 0, false, fmt.Errorf("parse max level metadata for %s/%s: %w", stage, space, err)
+	if string(item.Value) == "-1" {
+		return -1, true, nil
 	}
-	if level < -1 {
-		return 0, false, fmt.Errorf("%w: negative max level %d for %s/%s", errCorruptedMetadata, level, stage, space)
+	parsed, err := strconv.ParseUint(string(item.Value), 10, 32)
+	if err != nil {
+		return 0, false, fmt.Errorf("%w: parse max level for %s/%s: %v", errCorruptedMetadata, stage, space, err)
 	}
-	return level, true, nil
+	if parsed > uint64(math.MaxInt32) {
+		return 0, false, fmt.Errorf("%w: max level overflow for %s/%s", errCorruptedMetadata, stage, space)
+	}
+	return int(parsed), true, nil
 }
 
 // setMaxLevelMetadata stores the maximum tree level.
 func (m *Tree) setMaxLevelMetadata(ctx context.Context, stage, space string, level int) error {
 	pkVal := metaPK(stage, space, maxLevelKey)
-	val := []byte(fmt.Sprintf("%d", level))
+	val := strconv.AppendInt(nil, int64(level), 10)
 	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: val}); err != nil {
 		return fmt.Errorf("set max level metadata for %s/%s: %w", stage, space, err)
 	}

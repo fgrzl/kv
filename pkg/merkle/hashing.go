@@ -1,6 +1,7 @@
 package merkle
 
 import (
+	"encoding/binary"
 	"sync"
 
 	"github.com/zeebo/blake3"
@@ -24,11 +25,14 @@ func ComputeHash(data []byte) []byte {
 	return hash[:]
 }
 
-// computeDomainHash computes a domain-separated BLAKE3-256 hash.
-// Domain separation prevents hash collisions between different node types
-// (user leaves, padding, deleted markers, internal nodes).
+// computeDomainHash computes a domain-separated BLAKE3-256 hash with length-prefixed
+// framing so domains cannot collide via prefix overlap.
+// Encoding: uvarint(len(domain)) || domain || data
 func computeDomainHash(domain string, data []byte) []byte {
 	h := blake3.New()
+	var lenBuf [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(lenBuf[:], uint64(len(domain)))
+	h.Write(lenBuf[:n])
 	h.Write([]byte(domain))
 	if data != nil {
 		h.Write(data)

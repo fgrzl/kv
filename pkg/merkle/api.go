@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -87,9 +88,10 @@ func (m *Tree) SymmetricDiff(ctx context.Context, prev, curr, space string) enum
 			}))
 }
 
-// GetRootHash returns the Merkle root hash and underlying value for a given stage/space.
-func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, []byte, error) {
-	return m.getHash(ctx, stage, space, rootRef)
+// GetRootHash returns the Merkle root hash for a given stage/space.
+func (m *Tree) GetRootHash(ctx context.Context, stage, space string) ([]byte, error) {
+	hash, _, err := m.getHash(ctx, stage, space, rootRef)
+	return hash, err
 }
 
 // Prune removes all Merkle nodes for the given stage and space.
@@ -193,6 +195,16 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 		return ErrInvalidLeaf
 	}
 
+	leafCount, err := m.GetLeafCount(ctx, stage, space)
+	if err != nil {
+		return err
+	}
+	return m.updateLeafKnownCount(ctx, stage, space, leafIndex, leafCount, newLeaf)
+}
+
+// updateLeafKnownCount is the inner update path used by UpdateLeaf and RemoveLeaf to avoid
+// double-fetching leaf count metadata.
+func (m *Tree) updateLeafKnownCount(ctx context.Context, stage, space string, leafIndex, leafCount int, newLeaf Leaf) error {
 	ctx, span := tracer.Start(ctx, "merkle.UpdateLeaf",
 		trace.WithAttributes(
 			attribute.String("stage", stage),
@@ -203,13 +215,6 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 
 	slog.DebugContext(ctx, "updating leaf", "stage", stage, "space", space, "leafIndex", leafIndex)
 
-	leafCount, err := m.GetLeafCount(ctx, stage, space)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to get leaf count", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
 	if leafIndex >= leafCount {
 		err := fmt.Errorf("leaf index %d out of bounds (count: %d)", leafIndex, leafCount)
 		slog.ErrorContext(ctx, "leaf index out of bounds", "stage", stage, "space", space, "leafIndex", leafIndex, "leafCount", leafCount)
@@ -218,18 +223,21 @@ func (m *Tree) UpdateLeaf(ctx context.Context, stage, space string, leafIndex in
 		return err
 	}
 
-	// Persist the updated leaf
-	pkVal := nodePK(stage, space, 0, leafIndex)
-	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: encodeLeafValue(newLeaf)}); err != nil {
-		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
+	// Combine the leaf write with the path-recompute writes into a single Batch.
+	leafWrite := &kv.BatchItem{
+		PK:    nodePK(stage, space, 0, leafIndex),
+		Value: encodeLeafValue(newLeaf),
+		Op:    kv.Put,
+	}
+	writes, err := m.computePathToRootWrites(ctx, stage, space, leafIndex, leafCount, newLeaf.Hash, nil, []*kv.BatchItem{leafWrite})
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to compute path-to-root writes", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-
-	// Recompute path to root
-	if err := m.recomputePathToRootWithLeafHash(ctx, stage, space, leafIndex, leafCount, newLeaf.Hash); err != nil {
-		slog.ErrorContext(ctx, "failed to recompute path to root", "stage", stage, "space", space, "err", err)
+	if err := m.store.Batch(ctx, writes); err != nil {
+		slog.ErrorContext(ctx, "failed to persist leaf and path", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -273,40 +281,85 @@ func (m *Tree) AddLeaf(ctx context.Context, stage, space string, newLeaf Leaf) (
 		return 0, err
 	}
 
-	// Persist the new leaf
-	pkVal := nodePK(stage, space, 0, leafCount)
-	if err := m.store.Put(ctx, &kv.Item{PK: pkVal, Value: encodeLeafValue(newLeaf)}); err != nil {
-		slog.ErrorContext(ctx, "failed to persist leaf", "stage", stage, "space", space, "err", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, err
-	}
-
-	// Check if we need to add padding
 	newLeafCount := leafCount + 1
-	if newLeafCount%m.branching != 0 {
-		// Calculate target padded count
-		paddedCount := ((newLeafCount / m.branching) + 1) * m.branching
-		// Add padding nodes if needed
-		if err := m.ensurePaddingExists(ctx, stage, space, newLeafCount, paddedCount); err != nil {
-			slog.ErrorContext(ctx, "failed to add padding", "stage", stage, "space", space, "err", err)
+	oldMaxLevel := m.calculateMaxLevel(m.getPaddedCount(leafCount))
+	newMaxLevel := m.calculateMaxLevel(m.getPaddedCount(newLeafCount))
+	rebuild := newMaxLevel != oldMaxLevel || leafCount == 0
+
+	if rebuild {
+		// Tree height changed: full internal-node recompute. Persist the leaf, padding,
+		// and updated leafcount first so the rebuild reads consistent state.
+		partition := treePartition(stage, space)
+		paddedCount := m.getPaddedCount(newLeafCount)
+		pre := make([]*kv.BatchItem, 0, paddedCount-leafCount+1)
+		pre = append(pre, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, 0, leafCount),
+			Value: encodeLeafValue(newLeaf),
+			Op:    kv.Put,
+		})
+		for i := newLeafCount; i < paddedCount; i++ {
+			pre = append(pre, &kv.BatchItem{
+				PK:    nodePKInPartition(partition, 0, i),
+				Value: cachedPaddingLeafVal,
+				Op:    kv.Put,
+			})
+		}
+		pre = append(pre, &kv.BatchItem{
+			PK:    metaPKInPartition(partition, leafCountKey),
+			Value: strconv.AppendInt(nil, int64(newLeafCount), 10),
+			Op:    kv.Put,
+		})
+		if err := m.store.Batch(ctx, pre); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return 0, err
 		}
+		if err := m.recomputeAllInternalNodes(ctx, stage, space); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return 0, err
+		}
+		slog.DebugContext(ctx, "leaf added (rebuilt)", "stage", stage, "space", space, "leafIndex", leafCount)
+		span.SetAttributes(attribute.Int("leafIndex", leafCount))
+		return leafCount, nil
 	}
 
-	// Update leaf count metadata BEFORE recomputing nodes
-	if err := m.setLeafCountMetadata(ctx, stage, space, newLeafCount); err != nil {
-		slog.ErrorContext(ctx, "failed to update leaf count", "stage", stage, "space", space, "err", err)
+	// Fast path: tree height unchanged. Combine leaf + padding + leafcount + path-recompute
+	// + root cache into a SINGLE Batch on top of one GetBatch for sibling reads. Net cost
+	// for AddLeaf in steady state: 1 Get(leafcount) + 1 GetBatch(siblings) + 1 Batch(writes).
+	// Padding leaves and the new leaf are passed to the path recompute as known-hashes so
+	// the GetBatch doesn't try to read rows that haven't been written yet.
+	partition := treePartition(stage, space)
+	paddedCount := m.getPaddedCount(newLeafCount)
+	pre := make([]*kv.BatchItem, 0, paddedCount-leafCount+1)
+	known := make(map[int][]byte, paddedCount-leafCount)
+	pre = append(pre, &kv.BatchItem{
+		PK:    nodePKInPartition(partition, 0, leafCount),
+		Value: encodeLeafValue(newLeaf),
+		Op:    kv.Put,
+	})
+	known[leafCount] = newLeaf.Hash
+	for i := newLeafCount; i < paddedCount; i++ {
+		pre = append(pre, &kv.BatchItem{
+			PK:    nodePKInPartition(partition, 0, i),
+			Value: cachedPaddingLeafVal,
+			Op:    kv.Put,
+		})
+		known[i] = cachedPaddingHash
+	}
+	pre = append(pre, &kv.BatchItem{
+		PK:    metaPKInPartition(partition, leafCountKey),
+		Value: strconv.AppendInt(nil, int64(newLeafCount), 10),
+		Op:    kv.Put,
+	})
+
+	writes, err := m.computePathToRootWrites(ctx, stage, space, leafCount, newLeafCount, newLeaf.Hash, known, pre)
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, err
 	}
-
-	// Recompute affected paths
-	if err := m.recomputeAffectedNodes(ctx, stage, space, leafCount, newLeafCount, newLeaf.Hash); err != nil {
-		slog.ErrorContext(ctx, "failed to recompute affected nodes", "stage", stage, "space", space, "err", err)
+	if err := m.store.Batch(ctx, writes); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return 0, err
@@ -352,8 +405,15 @@ func (m *Tree) RemoveLeaf(ctx context.Context, stage, space string, leafIndex in
 		Hash: deletedHash(),
 	}
 
-	// Update with the deleted marker
-	if err := m.UpdateLeaf(ctx, stage, space, leafIndex, deletedLeaf); err != nil {
+	leafCount, err := m.GetLeafCount(ctx, stage, space)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
+	// Update with the deleted marker (reuses the leaf count we just fetched).
+	if err := m.updateLeafKnownCount(ctx, stage, space, leafIndex, leafCount, deletedLeaf); err != nil {
 		slog.ErrorContext(ctx, "failed to remove leaf", "stage", stage, "space", space, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

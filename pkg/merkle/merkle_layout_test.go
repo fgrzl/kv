@@ -52,12 +52,12 @@ func TestPruneRemovesEntireTree(t *testing.T) {
 	stage, space := "pr", "une"
 
 	require.NoError(t, m.Build(ctx, stage, space, leaves("a", "b")))
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 	require.NotNil(t, root)
 
 	require.NoError(t, m.Prune(ctx, stage, space))
-	rootAfter, _, err := m.GetRootHash(ctx, stage, space)
+	rootAfter, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 	require.Nil(t, rootAfter)
 }

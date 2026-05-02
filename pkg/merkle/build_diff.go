@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
+	"sync"
 
 	"github.com/fgrzl/enumerators"
 	"github.com/fgrzl/kv"
@@ -70,12 +72,12 @@ func (m *Tree) collectBuildPutBatchItems(stage, space string, leaves enumerators
 	batchItems = append(batchItems,
 		&kv.BatchItem{
 			PK:    metaPKInPartition(partition, leafCountKey),
-			Value: []byte(fmt.Sprintf("%d", actualLeafCount)),
+			Value: strconv.AppendInt(nil, int64(actualLeafCount), 10),
 			Op:    kv.Put,
 		},
 		&kv.BatchItem{
 			PK:    metaPKInPartition(partition, maxLevelKey),
-			Value: []byte(fmt.Sprintf("%d", maxLevel)),
+			Value: strconv.AppendInt(nil, int64(maxLevel), 10),
 			Op:    kv.Put,
 		},
 	)
@@ -95,13 +97,6 @@ func (m *Tree) hashNodeLevelInPartition(partition lexkey.LexKey, nodes []Branch,
 		next = append(next, Branch{Hash: sum, Level: level, Index: i / m.branching})
 	}
 	return next, batch
-}
-
-func (m *Tree) commitBatchIfNeeded(ctx context.Context, batch []*kv.BatchItem) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	return m.store.Batch(ctx, batch)
 }
 
 func hashNodes(nodes []Branch) []byte {
@@ -168,7 +163,10 @@ func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodeP
 		}
 	}
 
-	chunks := m.diffChildNodes(ctx, prev, curr, space, ref)
+	chunks, err := m.diffChildNodes(ctx, prev, curr, space, ref)
+	if err != nil {
+		return enumerators.Error[Leaf](err)
+	}
 	if len(chunks) == 0 {
 		return enumerators.Empty[Leaf]()
 	}
@@ -188,10 +186,10 @@ func decodeLeafEnumerator(val []byte) enumerators.Enumerator[Leaf] {
 	return enumerators.Empty[Leaf]()
 }
 
-func (m *Tree) diffChildNodes(ctx context.Context, prev, curr, space string, ref NodePosition) []NodePosition {
+func (m *Tree) diffChildNodes(ctx context.Context, prev, curr, space string, ref NodePosition) ([]NodePosition, error) {
 	chunks := make([]NodePosition, 0, m.branching)
 	if m.branching <= 0 {
-		return chunks
+		return chunks, nil
 	}
 
 	childLevel := ref.Level - 1
@@ -208,46 +206,49 @@ func (m *Tree) diffChildNodes(ctx context.Context, prev, curr, space string, ref
 		currKeys[i] = nodePKInPartition(currPartition, child.Level, child.Index)
 	}
 
-	prevResults, prevErr := m.store.GetBatch(ctx, prevKeys...)
-	currResults, currErr := m.store.GetBatch(ctx, currKeys...)
+	// Issue both GetBatch calls in parallel: they target different partitions so they
+	// cannot be merged into a single OData filter, but they're independent.
+	var (
+		wg          sync.WaitGroup
+		prevResults []kv.BatchGetResult
+		currResults []kv.BatchGetResult
+		prevErr     error
+		currErr     error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		prevResults, prevErr = m.store.GetBatch(ctx, prevKeys...)
+	}()
+	go func() {
+		defer wg.Done()
+		currResults, currErr = m.store.GetBatch(ctx, currKeys...)
+	}()
+	wg.Wait()
+
+	if prevErr != nil {
+		return nil, fmt.Errorf("diff get batch prev: %w", prevErr)
+	}
+	if currErr != nil {
+		return nil, fmt.Errorf("diff get batch curr: %w", currErr)
+	}
 
 	for i := 0; i < m.branching; i++ {
-		prevFound := false
-		if prevErr == nil {
-			prevFound = prevResults[i].Found && prevResults[i].Item != nil
-		} else {
-			prevHash, _, _ := m.getHash(ctx, prev, space, childNodes[i])
-			prevFound = prevHash != nil
-		}
-
-		currFound := false
-		if currErr == nil {
-			currFound = currResults[i].Found && currResults[i].Item != nil
-		} else {
-			currHash, _, _ := m.getHash(ctx, curr, space, childNodes[i])
-			currFound = currHash != nil
-		}
-
+		prevFound := prevResults[i].Found && prevResults[i].Item != nil
+		currFound := currResults[i].Found && currResults[i].Item != nil
 		if prevFound || currFound {
 			chunks = append(chunks, childNodes[i])
 		}
 	}
 
-	return chunks
+	return chunks, nil
 }
 
 func (m *Tree) findMaxLevel(ctx context.Context, stage, space string) int {
 	if level, ok, err := m.getMaxLevelMetadata(ctx, stage, space); err == nil && ok {
 		return level
 	}
-
-	for h := 0; ; h++ {
-		pkVal := nodePK(stage, space, h, 0)
-		item, err := m.store.Get(ctx, pkVal)
-		if err != nil || item == nil {
-			return h - 1
-		}
-	}
+	return -1
 }
 
 func (m *Tree) walkSubtree(ctx context.Context, stage, space string, ref NodePosition) enumerators.Enumerator[Leaf] {

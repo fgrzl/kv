@@ -128,7 +128,7 @@ func TestBuildUsesSingleBatchChunksCall(t *testing.T) {
 	// Inner store still performs one Batch per chunk.
 	assert.GreaterOrEqual(t, wrap.batchCalls.Load(), int64(2), "chunked writes should map to multiple inner Batch calls")
 
-	root, _, err := tree.GetRootHash(ctx, "st", "sp")
+	root, err := tree.GetRootHash(ctx, "st", "sp")
 	require.NoError(t, err)
 	assert.NotNil(t, root)
 }
@@ -164,8 +164,8 @@ func TestUpdateLeafUsesSingleGetBatchForPathRecompute(t *testing.T) {
 	require.NoError(t, tree.UpdateLeaf(ctx, "st", "sp", 9, leaf("updated-09")))
 
 	assert.Equal(t, int64(1), wrap.getBatchCalls.Load()-getBatchBefore, "UpdateLeaf should prefetch all recompute siblings in one GetBatch")
-	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "UpdateLeaf should persist all recomputed parents and root in one Batch")
-	assert.Equal(t, int64(1), wrap.putCalls.Load()-putBefore, "UpdateLeaf should only Put the leaf directly")
+	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "UpdateLeaf should persist leaf + recomputed path + root in one Batch")
+	assert.Equal(t, int64(0), wrap.putCalls.Load()-putBefore, "UpdateLeaf should not issue any standalone Puts")
 }
 
 func TestAddLeafStableHeightUsesSingleGetBatchForPathRecompute(t *testing.T) {
@@ -187,6 +187,6 @@ func TestAddLeafStableHeightUsesSingleGetBatchForPathRecompute(t *testing.T) {
 
 	assert.Equal(t, 3, index)
 	assert.Equal(t, int64(1), wrap.getBatchCalls.Load()-getBatchBefore, "stable-height AddLeaf should prefetch all recompute siblings in one GetBatch")
-	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "stable-height AddLeaf should persist recomputed parents and root in one Batch")
-	assert.Equal(t, int64(2), wrap.putCalls.Load()-putBefore, "stable-height AddLeaf should Put the leaf and leaf-count metadata directly")
+	assert.Equal(t, int64(1), wrap.batchCalls.Load()-batchBefore, "stable-height AddLeaf should persist leaf + padding + leafcount + path + root in one Batch")
+	assert.Equal(t, int64(0), wrap.putCalls.Load()-putBefore, "stable-height AddLeaf should not issue any standalone Puts")
 }

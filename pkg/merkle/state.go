@@ -14,10 +14,8 @@ var tracer = otel.Tracer("github.com/fgrzl/kv/merkle")
 // Constants for internal keys and metadata.
 const (
 	defaultBatchSize = 500_000
-	metaPrefix       = "meta"
 	leafCountKey     = "leafcount"
 	maxLevelKey      = "maxlevel"
-	rootKey          = "root"
 )
 
 // Domain-separated hash prefixes for synthetic nodes.

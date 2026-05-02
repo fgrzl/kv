@@ -57,7 +57,7 @@ func TestShouldBuildMerkleTreeAndGetRootHash(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotNil(t, root)
 }
@@ -171,7 +171,7 @@ func TestShouldPruneMerkleTree(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.Nil(t, root)
 	assert.NoError(t, err)
 }
@@ -207,7 +207,7 @@ func TestShouldAllowBuildingWithEmptyLeaves(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.Nil(t, root)
 }
@@ -291,7 +291,7 @@ func TestShouldHandleEmptyLeafEnumerator(t *testing.T) {
 
 	// Assert
 	assert.NoError(t, err)
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.Nil(t, root) // Empty tree has no root
 }
@@ -330,7 +330,7 @@ func TestShouldHandleBuildWithDifferentBranchingFactors(t *testing.T) {
 
 			// Assert
 			assert.NoError(t, err)
-			root, _, err := m.GetRootHash(ctx, stage, space)
+			root, err := m.GetRootHash(ctx, stage, space)
 			assert.NoError(t, err)
 			assert.NotNil(t, root)
 		})
@@ -531,7 +531,7 @@ func TestShouldUpdateLeafAndRecomputeRoot(t *testing.T) {
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C", "D")))
 
 	// Get original root hash
-	origRoot, _, err := m.GetRootHash(ctx, stage, space)
+	origRoot, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 
 	// Act - Update leaf at index 1 (B -> X)
@@ -542,7 +542,7 @@ func TestShouldUpdateLeafAndRecomputeRoot(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify root hash changed
-	newRoot, _, err := m.GetRootHash(ctx, stage, space)
+	newRoot, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotEqual(t, origRoot, newRoot, "root hash should change after leaf update")
 
@@ -565,7 +565,7 @@ func TestShouldUpdateMultipleLeavesIndependently(t *testing.T) {
 	space := "multi"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C", "D", "E", "F")))
 
-	origRoot, _, err := m.GetRootHash(ctx, stage, space)
+	origRoot, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 
 	// Act - Update multiple leaves
@@ -574,7 +574,7 @@ func TestShouldUpdateMultipleLeavesIndependently(t *testing.T) {
 	require.NoError(t, m.UpdateLeaf(ctx, stage, space, 5, leaf("Z")))
 
 	// Assert
-	newRoot, _, err := m.GetRootHash(ctx, stage, space)
+	newRoot, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotEqual(t, origRoot, newRoot)
 
@@ -618,7 +618,7 @@ func TestShouldAddLeafToExistingTree(t *testing.T) {
 	space := "add"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C")))
 
-	origRoot, _, err := m.GetRootHash(ctx, stage, space)
+	origRoot, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 
 	// Act
@@ -635,7 +635,7 @@ func TestShouldAddLeafToExistingTree(t *testing.T) {
 	assert.Equal(t, 4, count)
 
 	// Verify root hash changed
-	newRoot, _, err := m.GetRootHash(ctx, stage, space)
+	newRoot, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotEqual(t, origRoot, newRoot)
 
@@ -665,7 +665,7 @@ func TestShouldAddLeafToEmptyTree(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, count)
 
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotNil(t, root)
 }
@@ -710,7 +710,7 @@ func TestShouldRemoveLeafViaSoftDelete(t *testing.T) {
 	space := "remove"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C", "D")))
 
-	origRoot, _, err := m.GetRootHash(ctx, stage, space)
+	origRoot, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 
 	// Act - Remove leaf at index 2
@@ -720,7 +720,7 @@ func TestShouldRemoveLeafViaSoftDelete(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify root hash changed
-	newRoot, _, err := m.GetRootHash(ctx, stage, space)
+	newRoot, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotEqual(t, origRoot, newRoot)
 
@@ -752,7 +752,7 @@ func TestShouldRemoveAndAddLeafAtSameIndex(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 3, count)
 
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotNil(t, root)
 
@@ -788,7 +788,7 @@ func TestShouldHandleMixedOperations(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 4, count)
 
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotNil(t, root)
 
@@ -847,9 +847,9 @@ func TestInvariantSurgicalUpdateEqualsRebuild(t *testing.T) {
 	require.NoError(t, m.Build(ctx, stage, space2, leaves("A", "X", "C", "D", "E")))
 
 	// Act
-	surgicalRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	surgicalRoot, err := m.GetRootHash(ctx, stage, space1)
 	require.NoError(t, err)
-	rebuildRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	rebuildRoot, err := m.GetRootHash(ctx, stage, space2)
 	require.NoError(t, err)
 
 	// Assert
@@ -867,7 +867,7 @@ func TestInvariantBatchLeafMutationsEqualsRebuild(t *testing.T) {
 	space2 := "rebuild"
 
 	require.NoError(t, m.Build(ctx, stage, space1, leaves("A", "B", "C", "D")))
-	origRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	origRoot, err := m.GetRootHash(ctx, stage, space1)
 	require.NoError(t, err)
 
 	resultIndexes, err := m.ApplyLeafMutations(ctx, stage, space1, []LeafMutation{
@@ -900,7 +900,7 @@ func TestInvariantBatchLeafMutationsEqualsRebuild(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "F", leaf5.Ref)
 
-	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	mutatedRoot, err := m.GetRootHash(ctx, stage, space1)
 	require.NoError(t, err)
 	assert.NotEqual(t, origRoot, mutatedRoot)
 
@@ -913,7 +913,7 @@ func TestInvariantBatchLeafMutationsEqualsRebuild(t *testing.T) {
 		leaf("F"),
 	}
 	require.NoError(t, m.Build(ctx, stage, space2, enumerators.Slice(expectedLeaves)))
-	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	expectedRoot, err := m.GetRootHash(ctx, stage, space2)
 	require.NoError(t, err)
 
 	assert.Equal(t, expectedRoot, mutatedRoot, "batch mutations must match a rebuild with the same final leaves")
@@ -952,11 +952,11 @@ func TestInvariantAppendOnlyBatchMutationsEqualsRebuild(t *testing.T) {
 		assert.Equal(t, ref, leafAtIndex.Ref)
 	}
 
-	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	mutatedRoot, err := m.GetRootHash(ctx, stage, space1)
 	require.NoError(t, err)
 
 	require.NoError(t, m.Build(ctx, stage, space2, leaves("A", "B", "C", "D", "E", "F", "G", "H")))
-	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	expectedRoot, err := m.GetRootHash(ctx, stage, space2)
 	require.NoError(t, err)
 
 	assert.Equal(t, expectedRoot, mutatedRoot, "append-only batch mutations must match a rebuild with the same final leaves")
@@ -998,11 +998,11 @@ func TestInvariantAppendOnlyMutationSessionEqualsRebuild(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 9, count)
 
-	mutatedRoot, _, err := m.GetRootHash(ctx, stage, space1)
+	mutatedRoot, err := m.GetRootHash(ctx, stage, space1)
 	require.NoError(t, err)
 
 	require.NoError(t, m.Build(ctx, stage, space2, leaves("A", "B", "C", "D", "E", "F", "G", "H", "I")))
-	expectedRoot, _, err := m.GetRootHash(ctx, stage, space2)
+	expectedRoot, err := m.GetRootHash(ctx, stage, space2)
 	require.NoError(t, err)
 
 	assert.Equal(t, expectedRoot, mutatedRoot, "append-only mutation session must match a rebuild with the same final leaves")
@@ -1021,9 +1021,9 @@ func TestInvariantRootHashDeterminism(t *testing.T) {
 	require.NoError(t, m.Build(ctx, stage, "space2", leaves("P", "Q", "R")))
 
 	// Act
-	root1, _, err := m.GetRootHash(ctx, stage, "space1")
+	root1, err := m.GetRootHash(ctx, stage, "space1")
 	require.NoError(t, err)
-	root2, _, err := m.GetRootHash(ctx, stage, "space2")
+	root2, err := m.GetRootHash(ctx, stage, "space2")
 	require.NoError(t, err)
 
 	// Assert
@@ -1149,7 +1149,7 @@ func TestInvariantEmptyTreeBehavior(t *testing.T) {
 	space := "empty"
 
 	// Empty tree has no root
-	root, _, err := m.GetRootHash(ctx, stage, space)
+	root, err := m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.Nil(t, root)
 
@@ -1168,7 +1168,7 @@ func TestInvariantEmptyTreeBehavior(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, count)
 
-	root, _, err = m.GetRootHash(ctx, stage, space)
+	root, err = m.GetRootHash(ctx, stage, space)
 	assert.NoError(t, err)
 	assert.NotNil(t, root)
 }
@@ -1182,13 +1182,13 @@ func TestInvariantHashPropagation(t *testing.T) {
 	space := "propagation"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B", "C", "D", "E", "F")))
 
-	origRoot, _, err := m.GetRootHash(ctx, stage, space)
+	origRoot, err := m.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 
 	// Update each leaf and verify root changes
 	for i := 0; i < 6; i++ {
 		require.NoError(t, m.UpdateLeaf(ctx, stage, space, i, leaf(fmt.Sprintf("X%d", i))))
-		newRoot, _, err := m.GetRootHash(ctx, stage, space)
+		newRoot, err := m.GetRootHash(ctx, stage, space)
 		require.NoError(t, err)
 		assert.NotEqual(t, origRoot, newRoot, "updating leaf %d should change root", i)
 		origRoot = newRoot
@@ -1276,7 +1276,7 @@ func TestInvariantBranchingFactorRespected(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, tc.leaves, count)
 
-			root, _, err := m.GetRootHash(ctx, stage, space)
+			root, err := m.GetRootHash(ctx, stage, space)
 			assert.NoError(t, err)
 			assert.NotNil(t, root)
 

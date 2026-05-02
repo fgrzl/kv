@@ -126,7 +126,7 @@ func BenchmarkGetRootHash(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := m.GetRootHash(ctx, "bench-stage", "bench")
+		_, err := m.GetRootHash(ctx, "bench-stage", "bench")
 		if err != nil {
 			b.Fatal(err)
 		}
