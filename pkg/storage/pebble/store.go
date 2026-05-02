@@ -146,7 +146,7 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Set(key, encoded, pebble.Sync)
+	return s.db.Set(key, encoded, pebble.NoSync)
 }
 
 // Put stores an item, replacing any existing value.
@@ -155,12 +155,12 @@ func (s *store) Put(ctx context.Context, item *kv.Item) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Set(item.PK.Encode(), encoded, pebble.Sync)
+	return s.db.Set(item.PK.Encode(), encoded, pebble.NoSync)
 }
 
 // Remove deletes an item by primary key.
 func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
-	return s.db.Delete(pk.Encode(), pebble.Sync)
+	return s.db.Delete(pk.Encode(), pebble.NoSync)
 }
 
 // RemoveBatch deletes multiple items by primary key.
@@ -172,7 +172,7 @@ func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(pebble.NoSync)
 }
 
 // RemoveRange deletes all items in a key range.
@@ -186,7 +186,7 @@ func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
 	); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(pebble.NoSync)
 }
 
 // Batch executes batch operations (Put/Delete) atomically.
@@ -201,7 +201,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 			return fmt.Errorf("batch operation failed for key %v: %w", item.PK, err)
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	return batch.Commit(pebble.NoSync)
 }
 
 // BatchChunks splits items into chunks and executes them as batches.
@@ -216,7 +216,7 @@ func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*k
 		if err != nil {
 			return err
 		}
-		return batch.Commit(pebble.Sync)
+		return batch.Commit(pebble.NoSync)
 	})
 }
 
