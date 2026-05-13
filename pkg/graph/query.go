@@ -11,18 +11,16 @@ import (
 
 // Query operations
 
-func (g *graphStore) Neighbors(ctx context.Context, from string) ([]Edge, error) {
-	partition := g.edgePartition(from)
+func (g *graphStore) scanEdgesPartition(ctx context.Context, partition lexkey.LexKey) ([]Edge, error) {
 	args := kv.QueryArgs{PartitionKey: partition, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
 	items, err := g.store.Query(ctx, args, kv.Ascending)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Edge, 0, len(items)) // pre-allocate with known capacity
+	out := make([]Edge, 0, len(items))
 	for _, it := range items {
 		var se storedEdge
 		if err := json.Unmarshal(it.Value, &se); err != nil {
-			// skip malformed edge records
 			continue
 		}
 		meta, _ := decodeMeta(se.Meta)
@@ -31,24 +29,13 @@ func (g *graphStore) Neighbors(ctx context.Context, from string) ([]Edge, error)
 	return out, nil
 }
 
+func (g *graphStore) Neighbors(ctx context.Context, from string) ([]Edge, error) {
+	return g.scanEdgesPartition(ctx, g.edgePartition(from))
+}
+
 // IncomingNeighbors returns edges that point to `to` (i.e., incoming edges).
 func (g *graphStore) IncomingNeighbors(ctx context.Context, to string) ([]Edge, error) {
-	partition := g.inEdgePartition(to)
-	args := kv.QueryArgs{PartitionKey: partition, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	items, err := g.store.Query(ctx, args, kv.Ascending)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Edge, 0, len(items)) // pre-allocate
-	for _, it := range items {
-		var se storedEdge
-		if err := json.Unmarshal(it.Value, &se); err != nil {
-			continue
-		}
-		meta, _ := decodeMeta(se.Meta)
-		out = append(out, Edge{From: se.From, To: se.To, Meta: meta})
-	}
-	return out, nil
+	return g.scanEdgesPartition(ctx, g.inEdgePartition(to))
 }
 
 // NodeDegree returns the incoming and outgoing edge counts for a node.
@@ -80,10 +67,8 @@ func (g *graphStore) NodeDegree(ctx context.Context, id string) (int, int, error
 	return inCount, outCount, nil
 }
 
-// EnumerateNeighbors streams outgoing neighbors for `from`.
-func (g *graphStore) EnumerateNeighbors(ctx context.Context, from string) enumerators.Enumerator[Edge] {
-	part := g.edgePartition(from)
-	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+func (g *graphStore) enumerateEdgesPartition(ctx context.Context, partition lexkey.LexKey) enumerators.Enumerator[Edge] {
+	args := kv.QueryArgs{PartitionKey: partition, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
 	inner := g.store.Enumerate(ctx, args)
 	return enumerators.FilterMap(inner, func(it *kv.Item) (Edge, bool, error) {
 		var se storedEdge
@@ -95,17 +80,12 @@ func (g *graphStore) EnumerateNeighbors(ctx context.Context, from string) enumer
 	})
 }
 
+// EnumerateNeighbors streams outgoing neighbors for `from`.
+func (g *graphStore) EnumerateNeighbors(ctx context.Context, from string) enumerators.Enumerator[Edge] {
+	return g.enumerateEdgesPartition(ctx, g.edgePartition(from))
+}
+
 // EnumerateIncomingNeighbors streams incoming neighbors for `to`.
 func (g *graphStore) EnumerateIncomingNeighbors(ctx context.Context, to string) enumerators.Enumerator[Edge] {
-	part := g.inEdgePartition(to)
-	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	inner := g.store.Enumerate(ctx, args)
-	return enumerators.FilterMap(inner, func(it *kv.Item) (Edge, bool, error) {
-		var se storedEdge
-		if err := json.Unmarshal(it.Value, &se); err != nil {
-			return Edge{}, false, nil
-		}
-		meta, _ := decodeMeta(se.Meta)
-		return Edge{From: se.From, To: se.To, Meta: meta}, true, nil
-	})
+	return g.enumerateEdgesPartition(ctx, g.inEdgePartition(to))
 }

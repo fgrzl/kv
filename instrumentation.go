@@ -57,6 +57,91 @@ func NewInstrumentedKV(kv KV, store string) KV {
 	return &InstrumentedKV{kv: kv, store: store}
 }
 
+func (i *InstrumentedKV) withItemWriteSpan(ctx context.Context, spanName, op string, item *Item, fn func(context.Context) error) error {
+	ctx, span := tracer.Start(ctx, spanName,
+		trace.WithAttributes(
+			attribute.String("store", i.store),
+			attribute.String("operation", op),
+			attribute.String("partition_key", item.PK.PartitionKey.ToHexString()),
+			attribute.String("row_key", item.PK.RowKey.ToHexString()),
+		))
+	defer span.End()
+
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start).Seconds()
+		operationDuration.Record(ctx, duration,
+			metric.WithAttributes(
+				attribute.String("store", i.store),
+				attribute.String("operation", op),
+			))
+	}()
+
+	err := fn(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		operationCount.Add(ctx, 1,
+			metric.WithAttributes(
+				attribute.String("store", i.store),
+				attribute.String("operation", op),
+				attribute.String("result", "error"),
+			))
+		return err
+	}
+
+	operationCount.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("store", i.store),
+			attribute.String("operation", op),
+			attribute.String("result", "success"),
+		))
+
+	return nil
+}
+
+func (i *InstrumentedKV) withBatchOperationSpan(ctx context.Context, spanName, op string, batchSize int, fn func(context.Context) error) error {
+	ctx, span := tracer.Start(ctx, spanName,
+		trace.WithAttributes(
+			attribute.String("store", i.store),
+			attribute.String("operation", op),
+			attribute.Int("batch_size", batchSize),
+		))
+	defer span.End()
+
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start).Seconds()
+		operationDuration.Record(ctx, duration,
+			metric.WithAttributes(
+				attribute.String("store", i.store),
+				attribute.String("operation", op),
+			))
+	}()
+
+	err := fn(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		operationCount.Add(ctx, 1,
+			metric.WithAttributes(
+				attribute.String("store", i.store),
+				attribute.String("operation", op),
+				attribute.String("result", "error"),
+			))
+		return err
+	}
+
+	operationCount.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("store", i.store),
+			attribute.String("operation", op),
+			attribute.String("result", "success"),
+		))
+
+	return nil
+}
+
 func (i *InstrumentedKV) Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error) {
 	ctx, span := tracer.Start(ctx, "kv.Get",
 		trace.WithAttributes(
@@ -149,89 +234,15 @@ func (i *InstrumentedKV) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey
 }
 
 func (i *InstrumentedKV) Insert(ctx context.Context, item *Item) error {
-	ctx, span := tracer.Start(ctx, "kv.Insert",
-		trace.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "insert"),
-			attribute.String("partition_key", item.PK.PartitionKey.ToHexString()),
-			attribute.String("row_key", item.PK.RowKey.ToHexString()),
-		))
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		duration := time.Since(start).Seconds()
-		operationDuration.Record(ctx, duration,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "insert"),
-			))
-	}()
-
-	err := i.kv.Insert(ctx, item)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		operationCount.Add(ctx, 1,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "insert"),
-				attribute.String("result", "error"),
-			))
-		return err
-	}
-
-	operationCount.Add(ctx, 1,
-		metric.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "insert"),
-			attribute.String("result", "success"),
-		))
-
-	return nil
+	return i.withItemWriteSpan(ctx, "kv.Insert", "insert", item, func(ctx context.Context) error {
+		return i.kv.Insert(ctx, item)
+	})
 }
 
 func (i *InstrumentedKV) Put(ctx context.Context, item *Item) error {
-	ctx, span := tracer.Start(ctx, "kv.Put",
-		trace.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "put"),
-			attribute.String("partition_key", item.PK.PartitionKey.ToHexString()),
-			attribute.String("row_key", item.PK.RowKey.ToHexString()),
-		))
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		duration := time.Since(start).Seconds()
-		operationDuration.Record(ctx, duration,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "put"),
-			))
-	}()
-
-	err := i.kv.Put(ctx, item)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		operationCount.Add(ctx, 1,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "put"),
-				attribute.String("result", "error"),
-			))
-		return err
-	}
-
-	operationCount.Add(ctx, 1,
-		metric.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "put"),
-			attribute.String("result", "success"),
-		))
-
-	return nil
+	return i.withItemWriteSpan(ctx, "kv.Put", "put", item, func(ctx context.Context) error {
+		return i.kv.Put(ctx, item)
+	})
 }
 
 func (i *InstrumentedKV) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
@@ -278,45 +289,9 @@ func (i *InstrumentedKV) Remove(ctx context.Context, pk lexkey.PrimaryKey) error
 }
 
 func (i *InstrumentedKV) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error {
-	ctx, span := tracer.Start(ctx, "kv.RemoveBatch",
-		trace.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "remove_batch"),
-			attribute.Int("batch_size", len(keys)),
-		))
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		duration := time.Since(start).Seconds()
-		operationDuration.Record(ctx, duration,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "remove_batch"),
-			))
-	}()
-
-	err := i.kv.RemoveBatch(ctx, keys...)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		operationCount.Add(ctx, 1,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "remove_batch"),
-				attribute.String("result", "error"),
-			))
-		return err
-	}
-
-	operationCount.Add(ctx, 1,
-		metric.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "remove_batch"),
-			attribute.String("result", "success"),
-		))
-
-	return nil
+	return i.withBatchOperationSpan(ctx, "kv.RemoveBatch", "remove_batch", len(keys), func(ctx context.Context) error {
+		return i.kv.RemoveBatch(ctx, keys...)
+	})
 }
 
 func (i *InstrumentedKV) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
@@ -424,45 +399,9 @@ func (i *InstrumentedKV) Enumerate(ctx context.Context, queryArgs QueryArgs) enu
 }
 
 func (i *InstrumentedKV) Batch(ctx context.Context, items []*BatchItem) error {
-	ctx, span := tracer.Start(ctx, "kv.Batch",
-		trace.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "batch"),
-			attribute.Int("batch_size", len(items)),
-		))
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		duration := time.Since(start).Seconds()
-		operationDuration.Record(ctx, duration,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "batch"),
-			))
-	}()
-
-	err := i.kv.Batch(ctx, items)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		operationCount.Add(ctx, 1,
-			metric.WithAttributes(
-				attribute.String("store", i.store),
-				attribute.String("operation", "batch"),
-				attribute.String("result", "error"),
-			))
-		return err
-	}
-
-	operationCount.Add(ctx, 1,
-		metric.WithAttributes(
-			attribute.String("store", i.store),
-			attribute.String("operation", "batch"),
-			attribute.String("result", "success"),
-		))
-
-	return nil
+	return i.withBatchOperationSpan(ctx, "kv.Batch", "batch", len(items), func(ctx context.Context) error {
+		return i.kv.Batch(ctx, items)
+	})
 }
 
 func (i *InstrumentedKV) BatchChunks(ctx context.Context, items enumerators.Enumerator[*BatchItem], chunkSize int) error {

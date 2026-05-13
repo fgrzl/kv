@@ -23,8 +23,12 @@ func setupGraph(t *testing.T) Graph {
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_ = store.Close()
-		_ = os.RemoveAll(path)
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			t.Errorf("remove test db: %v", err)
+		}
 	})
 	return NewGraph(store, "test")
 }
@@ -204,53 +208,54 @@ func TestShouldRemoveEdgeIdempotently(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestShouldReturnNeighborsCorrectly(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-
-	// Act
-	nbrs, err := g.Neighbors(ctx, "a")
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, nbrs, 2)
-	// Order may vary, check both
-	ids := make([]string, len(nbrs))
-	for i, e := range nbrs {
-		ids[i] = e.To
+func TestShouldReturnNeighborsOrIncoming(t *testing.T) {
+	cases := []struct {
+		name      string
+		edges     [][2]string
+		query     string
+		incoming  bool
+		wantField func(Edge) string
+	}{
+		{
+			name:  "outgoing",
+			edges: [][2]string{{"a", "b"}, {"a", "c"}},
+			query: "a", incoming: false,
+			wantField: func(e Edge) string { return e.To },
+		},
+		{
+			name:  "incoming",
+			edges: [][2]string{{"b", "a"}, {"c", "a"}},
+			query: "a", incoming: true,
+			wantField: func(e Edge) string { return e.From },
+		},
 	}
-	assert.Contains(t, ids, "b")
-	assert.Contains(t, ids, "c")
-}
-
-func TestShouldReturnIncomingNeighborsCorrectly(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "b", "a", nil))
-	require.NoError(t, g.AddEdge(ctx, "c", "a", nil))
-
-	// Act
-	in, err := g.IncomingNeighbors(ctx, "a")
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, in, 2)
-	ids := make([]string, len(in))
-	for i, e := range in {
-		ids[i] = e.From
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := setupGraph(t)
+			ctx := context.Background()
+			for _, id := range []string{"a", "b", "c"} {
+				require.NoError(t, g.AddNode(ctx, id, nil))
+			}
+			for _, e := range tc.edges {
+				require.NoError(t, g.AddEdge(ctx, e[0], e[1], nil))
+			}
+			var edges []Edge
+			var err error
+			if tc.incoming {
+				edges, err = g.IncomingNeighbors(ctx, tc.query)
+			} else {
+				edges, err = g.Neighbors(ctx, tc.query)
+			}
+			assert.NoError(t, err)
+			assert.Len(t, edges, 2)
+			ids := make([]string, len(edges))
+			for i, e := range edges {
+				ids[i] = tc.wantField(e)
+			}
+			assert.Contains(t, ids, "b")
+			assert.Contains(t, ids, "c")
+		})
 	}
-	assert.Contains(t, ids, "b")
-	assert.Contains(t, ids, "c")
 }
 
 func TestShouldPerformBFSTraversal(t *testing.T) {
@@ -279,32 +284,46 @@ func TestShouldPerformBFSTraversal(t *testing.T) {
 	assert.Contains(t, order[1:], "c")
 }
 
-func TestShouldPerformBFSWithDepth(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
+func TestShouldPerformWalkWithDepth(t *testing.T) {
 	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddNode(ctx, "d", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "b", "d", nil))
-
-	// Act
-	var seen []string
-	err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
-		return nil
-	}, 0)
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, seen, 4)
-	assert.Contains(t, seen, "a:0")
-	assert.Contains(t, seen, "b:1")
-	assert.Contains(t, seen, "c:1")
-	assert.Contains(t, seen, "d:2")
+	build := func(t *testing.T) Graph {
+		g := setupGraph(t)
+		require.NoError(t, g.AddNode(ctx, "a", nil))
+		require.NoError(t, g.AddNode(ctx, "b", nil))
+		require.NoError(t, g.AddNode(ctx, "c", nil))
+		require.NoError(t, g.AddNode(ctx, "d", nil))
+		require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+		require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+		require.NoError(t, g.AddEdge(ctx, "b", "d", nil))
+		return g
+	}
+	cases := []struct {
+		name string
+		run  func(Graph, context.Context, func(string, int) error) error
+	}{
+		{"BFS", func(g Graph, ctx context.Context, cb func(string, int) error) error {
+			return g.BFSWithDepth(ctx, "a", cb, 0)
+		}},
+		{"DFS", func(g Graph, ctx context.Context, cb func(string, int) error) error {
+			return g.DFSWithDepth(ctx, "a", cb, 0)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := build(t)
+			var seen []string
+			err := tc.run(g, ctx, func(id string, depth int) error {
+				seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+				return nil
+			})
+			assert.NoError(t, err)
+			assert.Len(t, seen, 4)
+			assert.Contains(t, seen, "a:0")
+			assert.Contains(t, seen, "b:1")
+			assert.Contains(t, seen, "c:1")
+			assert.Contains(t, seen, "d:2")
+		})
+	}
 }
 
 func TestShouldCollectBFSIDs(t *testing.T) {
@@ -351,34 +370,6 @@ func TestShouldPerformDFSTraversal(t *testing.T) {
 	assert.Equal(t, "a", order[0])
 	assert.Contains(t, order, "b")
 	assert.Contains(t, order, "c")
-}
-
-func TestShouldPerformDFSWithDepth(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddNode(ctx, "d", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "b", "d", nil))
-
-	// Act
-	var seen []string
-	err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
-		return nil
-	}, 0)
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, seen, 4)
-	assert.Contains(t, seen, "a:0")
-	assert.Contains(t, seen, "b:1")
-	assert.Contains(t, seen, "c:1")
-	assert.Contains(t, seen, "d:2")
 }
 
 func TestShouldCollectDFSIDs(t *testing.T) {
@@ -457,62 +448,48 @@ func TestShouldReturnNodeDegree(t *testing.T) {
 	assert.Equal(t, 2, out)
 }
 
-func TestShouldEnumerateNeighbors(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-
-	// Act
-	var enumVals []Edge
-	enum := g.EnumerateNeighbors(ctx, "a")
-	err := enumerators.ForEach(enum, func(e Edge) error {
-		enumVals = append(enumVals, e)
-		return nil
-	})
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, enumVals, 2)
-	ids := make([]string, len(enumVals))
-	for i, e := range enumVals {
-		ids[i] = e.To
+func TestShouldEnumerateNeighborsOrIncoming(t *testing.T) {
+	cases := []struct {
+		name     string
+		edges    [][2]string
+		query    string
+		incoming bool
+		endpoint func(Edge) string
+	}{
+		{"outgoing", [][2]string{{"a", "b"}, {"a", "c"}}, "a", false, func(e Edge) string { return e.To }},
+		{"incoming", [][2]string{{"b", "a"}, {"c", "a"}}, "a", true, func(e Edge) string { return e.From }},
 	}
-	assert.Contains(t, ids, "b")
-	assert.Contains(t, ids, "c")
-}
-
-func TestShouldEnumerateIncomingNeighbors(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "b", "a", nil))
-	require.NoError(t, g.AddEdge(ctx, "c", "a", nil))
-
-	// Act
-	var enumVals []Edge
-	enum := g.EnumerateIncomingNeighbors(ctx, "a")
-	err := enumerators.ForEach(enum, func(e Edge) error {
-		enumVals = append(enumVals, e)
-		return nil
-	})
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, enumVals, 2)
-	ids := make([]string, len(enumVals))
-	for i, e := range enumVals {
-		ids[i] = e.From
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := setupGraph(t)
+			ctx := context.Background()
+			for _, id := range []string{"a", "b", "c"} {
+				require.NoError(t, g.AddNode(ctx, id, nil))
+			}
+			for _, e := range tc.edges {
+				require.NoError(t, g.AddEdge(ctx, e[0], e[1], nil))
+			}
+			var enumVals []Edge
+			var enum enumerators.Enumerator[Edge]
+			if tc.incoming {
+				enum = g.EnumerateIncomingNeighbors(ctx, tc.query)
+			} else {
+				enum = g.EnumerateNeighbors(ctx, tc.query)
+			}
+			err := enumerators.ForEach(enum, func(e Edge) error {
+				enumVals = append(enumVals, e)
+				return nil
+			})
+			assert.NoError(t, err)
+			assert.Len(t, enumVals, 2)
+			ids := make([]string, len(enumVals))
+			for i, e := range enumVals {
+				ids[i] = tc.endpoint(e)
+			}
+			assert.Contains(t, ids, "b")
+			assert.Contains(t, ids, "c")
+		})
 	}
-	assert.Contains(t, ids, "b")
-	assert.Contains(t, ids, "c")
 }
 
 func TestShouldBatchAddNodesAndEdges(t *testing.T) {
@@ -629,87 +606,94 @@ func TestShouldRespectBFSLimit(t *testing.T) {
 	assert.Contains(t, []string{"b", "c"}, order[1])
 }
 
-func TestShouldRespectBFSWithDepthLimit(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
+func TestShouldRespectWalkWithDepthLimit(t *testing.T) {
 	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-
-	// Act
-	var seen []string
-	err := g.BFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
-		return nil
-	}, 2) // limit to 2 nodes
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, seen, 2)
-	assert.Contains(t, seen, "a:0")
-	// Should visit one more node at depth 1 (either b or c)
-	depth1Nodes := make([]string, 0)
-	for _, s := range seen {
-		if strings.HasSuffix(s, ":1") {
-			depth1Nodes = append(depth1Nodes, s)
-		}
+	build := func(t *testing.T) Graph {
+		g := setupGraph(t)
+		require.NoError(t, g.AddNode(ctx, "a", nil))
+		require.NoError(t, g.AddNode(ctx, "b", nil))
+		require.NoError(t, g.AddNode(ctx, "c", nil))
+		require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+		require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
+		return g
 	}
-	assert.Len(t, depth1Nodes, 1)
-	assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
+	cases := []struct {
+		name string
+		run  func(Graph, context.Context, func(string, int) error) error
+	}{
+		{"BFS", func(g Graph, ctx context.Context, cb func(string, int) error) error {
+			return g.BFSWithDepth(ctx, "a", cb, 2)
+		}},
+		{"DFS", func(g Graph, ctx context.Context, cb func(string, int) error) error {
+			return g.DFSWithDepth(ctx, "a", cb, 2)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := build(t)
+			var seen []string
+			err := tc.run(g, ctx, func(id string, depth int) error {
+				seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
+				return nil
+			})
+			assert.NoError(t, err)
+			assert.Len(t, seen, 2)
+			assert.Contains(t, seen, "a:0")
+			depth1Nodes := make([]string, 0)
+			for _, s := range seen {
+				if strings.HasSuffix(s, ":1") {
+					depth1Nodes = append(depth1Nodes, s)
+				}
+			}
+			assert.Len(t, depth1Nodes, 1)
+			assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
+		})
+	}
 }
 
-func TestShouldHandleMalformedEdgeDataInNeighbors(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil)) // valid edge
-
-	// Manually insert invalid JSON in edge partition
-	edgePart := g.(*graphStore).edgePartition("a")
-	pk := lexkey.NewPrimaryKey(edgePart, lexkey.Encode("malformed-target"))
-	invalidJSON := []byte(`invalid json`)
-	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
-
-	// Act
-	nbrs, err := g.Neighbors(ctx, "a")
-
-	// Assert
-	assert.NoError(t, err)
-	// Should return only the valid edge, skip the malformed one
-	assert.Len(t, nbrs, 1)
-	assert.Equal(t, "b", nbrs[0].To)
+func TestShouldHandleMalformedEdgeDataInNeighborsOrIncoming(t *testing.T) {
+	cases := []struct {
+		name       string
+		incoming   bool
+		query      string
+		wantFromTo string
+	}{
+		{"neighbors", false, "a", "b"},
+		{"incoming_neighbors", true, "b", "a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := setupGraph(t)
+			ctx := context.Background()
+			require.NoError(t, g.AddNode(ctx, "a", nil))
+			require.NoError(t, g.AddNode(ctx, "b", nil))
+			require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
+			var pk lexkey.PrimaryKey
+			if tc.incoming {
+				inEdgePart := g.(*graphStore).inEdgePartition("b")
+				pk = lexkey.NewPrimaryKey(inEdgePart, lexkey.Encode("malformed-from"))
+			} else {
+				edgePart := g.(*graphStore).edgePartition("a")
+				pk = lexkey.NewPrimaryKey(edgePart, lexkey.Encode("malformed-target"))
+			}
+			invalidJSON := []byte(`invalid json`)
+			require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
+			if tc.incoming {
+				in, err := g.IncomingNeighbors(ctx, tc.query)
+				assert.NoError(t, err)
+				assert.Len(t, in, 1)
+				assert.Equal(t, tc.wantFromTo, in[0].From)
+			} else {
+				nbrs, err := g.Neighbors(ctx, tc.query)
+				assert.NoError(t, err)
+				assert.Len(t, nbrs, 1)
+				assert.Equal(t, tc.wantFromTo, nbrs[0].To)
+			}
+		})
+	}
 }
 
-func TestShouldHandleMalformedEdgeDataInIncomingNeighbors(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil)) // valid edge
-
-	// Manually insert invalid JSON in incoming edge partition
-	inEdgePart := g.(*graphStore).inEdgePartition("b")
-	pk := lexkey.NewPrimaryKey(inEdgePart, lexkey.Encode("malformed-from"))
-	invalidJSON := []byte(`invalid json`)
-	require.NoError(t, g.(*graphStore).store.Insert(ctx, &kv.Item{PK: pk, Value: invalidJSON}))
-
-	// Act
-	in, err := g.IncomingNeighbors(ctx, "b")
-
-	// Assert
-	assert.NoError(t, err)
-	// Should return only the valid edge, skip the malformed one
-	assert.Len(t, in, 1)
-	assert.Equal(t, "a", in[0].From)
-}
-
-func TestShouldRespectDFSLimit(t *testing.T) {
+func TestShouldHandleContextCancellationDuringBFSTraversal(t *testing.T) {
 	// Arrange
 	g := setupGraph(t)
 	ctx := context.Background()
@@ -734,39 +718,7 @@ func TestShouldRespectDFSLimit(t *testing.T) {
 	assert.Contains(t, []string{"b", "c"}, order[1])
 }
 
-func TestShouldRespectDFSWithDepthLimit(t *testing.T) {
-	// Arrange
-	g := setupGraph(t)
-	ctx := context.Background()
-	require.NoError(t, g.AddNode(ctx, "a", nil))
-	require.NoError(t, g.AddNode(ctx, "b", nil))
-	require.NoError(t, g.AddNode(ctx, "c", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "b", nil))
-	require.NoError(t, g.AddEdge(ctx, "a", "c", nil))
-
-	// Act
-	var seen []string
-	err := g.DFSWithDepth(ctx, "a", func(id string, depth int) error {
-		seen = append(seen, fmt.Sprintf("%s:%d", id, depth))
-		return nil
-	}, 2) // limit to 2 nodes
-
-	// Assert
-	assert.NoError(t, err)
-	assert.Len(t, seen, 2)
-	assert.Contains(t, seen, "a:0")
-	// Should visit one more node at depth 1
-	depth1Nodes := make([]string, 0)
-	for _, s := range seen {
-		if strings.HasSuffix(s, ":1") {
-			depth1Nodes = append(depth1Nodes, s)
-		}
-	}
-	assert.Len(t, depth1Nodes, 1)
-	assert.Contains(t, []string{"b:1", "c:1"}, depth1Nodes[0])
-}
-
-func TestShouldHandleContextCancellationDuringBFSTraversal(t *testing.T) {
+func TestShouldRespectDFSLimit(t *testing.T) {
 	// Arrange
 	g := setupGraph(t)
 	ctx, cancel := context.WithCancel(context.Background())

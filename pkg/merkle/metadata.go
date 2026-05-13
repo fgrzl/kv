@@ -21,7 +21,7 @@ func (m *Tree) getLeafCountMetadata(ctx context.Context, stage, space string) (i
 	}
 	count, err := strconv.ParseUint(string(item.Value), 10, 63)
 	if err != nil {
-		return 0, fmt.Errorf("%w: parse leaf count for %s/%s: %v", errCorruptedMetadata, stage, space, err)
+		return 0, fmt.Errorf("%w: parse leaf count for %s/%s: %w", errCorruptedMetadata, stage, space, err)
 	}
 	return int(count), nil
 }
@@ -42,7 +42,7 @@ func (m *Tree) getMaxLevelMetadata(ctx context.Context, stage, space string) (le
 	}
 	parsed, err := strconv.ParseUint(string(item.Value), 10, 32)
 	if err != nil {
-		return 0, false, fmt.Errorf("%w: parse max level for %s/%s: %v", errCorruptedMetadata, stage, space, err)
+		return 0, false, fmt.Errorf("%w: parse max level for %s/%s: %w", errCorruptedMetadata, stage, space, err)
 	}
 	if parsed > uint64(math.MaxInt32) {
 		return 0, false, fmt.Errorf("%w: max level overflow for %s/%s", errCorruptedMetadata, stage, space)

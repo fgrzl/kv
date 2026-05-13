@@ -42,7 +42,6 @@ func setup(t *testing.T, provider string) kv.KV {
 	var err error
 
 	switch provider {
-
 	case "azure":
 		// Default Azurite configuration for local testing
 		accountName := "devstoreaccount1"
@@ -79,7 +78,9 @@ func setup(t *testing.T, provider string) kv.KV {
 
 	// Cleanup after test
 	t.Cleanup(func() {
-		store.Close()
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
 	})
 
 	// Seed initial data
@@ -99,7 +100,6 @@ func benchmarkSetup(b *testing.B, provider string) kv.KV {
 	var err error
 
 	switch provider {
-
 	case "pebble":
 		tempDir := b.TempDir()
 		dbPath := filepath.Join(tempDir, fmt.Sprintf("bench_%v.pebble", uuid.NewString()))
@@ -114,7 +114,9 @@ func benchmarkSetup(b *testing.B, provider string) kv.KV {
 
 	// Cleanup after benchmark
 	b.Cleanup(func() {
-		store.Close()
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
 	})
 
 	return store
@@ -162,7 +164,9 @@ func setupCompressed(t *testing.T, provider string) kv.KV {
 	}
 
 	t.Cleanup(func() {
-		store.Close()
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
 	})
 
 	var batch []*kv.BatchItem
@@ -285,7 +289,9 @@ func setupMixedCompression(t *testing.T, provider string) (kv.KV, []*kv.Item) {
 
 	putItems(t, store, compressedItems)
 	t.Cleanup(func() {
-		store.Close()
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
 	})
 
 	return store, expected
@@ -358,28 +364,47 @@ func TestQueryExactMatch(t *testing.T) {
 	}
 }
 
-func TestQueryGreaterThan(t *testing.T) {
-	for _, provider := range providers {
-		t.Run(provider, func(t *testing.T) {
-			// Arrange
-			db := setup(t, provider)
-			args := kv.QueryArgs{
+func TestQueryGreaterThanAndLessThanOrEqual(t *testing.T) {
+	cases := []struct {
+		name string
+		args kv.QueryArgs
+		want []lexkey.LexKey
+	}{
+		{
+			name: "greater_than",
+			args: kv.QueryArgs{
 				PartitionKey: partitionKey,
 				StartRowKey:  lexkey.Encode("c"),
 				Operator:     kv.GreaterThan,
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), args, kv.Ascending)
-
-			// Assert
-			assert.NoError(t, err)
-			assert.Len(t, results, 4) // "d", "e", "f", "g"
-			assert.Equal(t, lexkey.Encode("d"), results[0].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("e"), results[1].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("f"), results[2].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("g"), results[3].PK.RowKey)
-		})
+			},
+			want: []lexkey.LexKey{
+				lexkey.Encode("d"), lexkey.Encode("e"), lexkey.Encode("f"), lexkey.Encode("g"),
+			},
+		},
+		{
+			name: "less_than_or_equal",
+			args: kv.QueryArgs{
+				PartitionKey: partitionKey,
+				EndRowKey:    lexkey.Encode("d"),
+				Operator:     kv.LessThanOrEqual,
+			},
+			want: []lexkey.LexKey{
+				lexkey.Encode("a"), lexkey.Encode("b"), lexkey.Encode("c"), lexkey.Encode("d"),
+			},
+		},
+	}
+	for _, provider := range providers {
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				db := setup(t, provider)
+				results, err := db.Query(t.Context(), tc.args, kv.Ascending)
+				require.NoError(t, err)
+				require.Len(t, results, len(tc.want))
+				for i, rk := range tc.want {
+					assert.Equal(t, rk, results[i].PK.RowKey)
+				}
+			})
+		}
 	}
 }
 
@@ -433,32 +458,30 @@ func TestQueryLessThan(t *testing.T) {
 	}
 }
 
+func assertQueryScanRoundTripsLargeValues(t *testing.T, db kv.KV, partition lexkey.LexKey) {
+	t.Helper()
+	items := []*kv.Item{
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: bytes.Repeat([]byte("value-a-"), 64)},
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: bytes.Repeat([]byte("value-b-"), 64)},
+		{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("value-c-"), 64)},
+	}
+	for _, item := range items {
+		require.NoError(t, db.Put(t.Context(), item))
+	}
+	results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: partition, Operator: kv.Scan}, kv.Ascending)
+	require.NoError(t, err)
+	require.Len(t, results, len(items))
+	for i, item := range items {
+		assert.Equal(t, item.PK, results[i].PK)
+		assert.Equal(t, item.Value, results[i].Value)
+	}
+}
+
 func TestQueryShouldDecodeCompressedValues(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
-			// Arrange
 			db := setupCompressed(t, provider)
-			partition := lexkey.Encode("compressed-query")
-			items := []*kv.Item{
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: bytes.Repeat([]byte("value-a-"), 64)},
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: bytes.Repeat([]byte("value-b-"), 64)},
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("value-c-"), 64)},
-			}
-			for _, item := range items {
-				err := db.Put(t.Context(), item)
-				require.NoError(t, err)
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: partition, Operator: kv.Scan}, kv.Ascending)
-
-			// Assert
-			require.NoError(t, err)
-			require.Len(t, results, len(items))
-			for i, item := range items {
-				assert.Equal(t, item.PK, results[i].PK)
-				assert.Equal(t, item.Value, results[i].Value)
-			}
+			assertQueryScanRoundTripsLargeValues(t, db, lexkey.Encode("compressed-query"))
 		})
 	}
 }
@@ -466,29 +489,8 @@ func TestQueryShouldDecodeCompressedValues(t *testing.T) {
 func TestQueryShouldDecodeCompressedValuesByDefault(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
-			// Arrange
 			db := setup(t, provider)
-			partition := lexkey.Encode("default-compressed-query")
-			items := []*kv.Item{
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("a")), Value: bytes.Repeat([]byte("value-a-"), 64)},
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("b")), Value: bytes.Repeat([]byte("value-b-"), 64)},
-				{PK: lexkey.NewPrimaryKey(partition, lexkey.Encode("c")), Value: bytes.Repeat([]byte("value-c-"), 64)},
-			}
-			for _, item := range items {
-				err := db.Put(t.Context(), item)
-				require.NoError(t, err)
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), kv.QueryArgs{PartitionKey: partition, Operator: kv.Scan}, kv.Ascending)
-
-			// Assert
-			require.NoError(t, err)
-			require.Len(t, results, len(items))
-			for i, item := range items {
-				assert.Equal(t, item.PK, results[i].PK)
-				assert.Equal(t, item.Value, results[i].Value)
-			}
+			assertQueryScanRoundTripsLargeValues(t, db, lexkey.Encode("default-compressed-query"))
 		})
 	}
 }
@@ -549,31 +551,6 @@ func testValueCompressionConfig() valuecodec.Config {
 	return config
 }
 
-func TestQueryLessThanOrEqual(t *testing.T) {
-	for _, provider := range providers {
-		t.Run(provider, func(t *testing.T) {
-			// Arrange
-			db := setup(t, provider)
-			args := kv.QueryArgs{
-				PartitionKey: partitionKey,
-				EndRowKey:    lexkey.Encode("d"),
-				Operator:     kv.LessThanOrEqual,
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), args, kv.Ascending)
-
-			// Assert
-			assert.NoError(t, err)
-			assert.Len(t, results, 4) // "a", "b", "c", "d"
-			assert.Equal(t, lexkey.Encode("a"), results[0].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("b"), results[1].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
-		})
-	}
-}
-
 func TestQueryBetween(t *testing.T) {
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
@@ -599,30 +576,35 @@ func TestQueryBetween(t *testing.T) {
 	}
 }
 
-func TestQueryPartitionScan(t *testing.T) {
+func TestQueryPartitionScanAscendingAndDescending(t *testing.T) {
+	keys := []lexkey.LexKey{
+		lexkey.Encode("a"), lexkey.Encode("b"), lexkey.Encode("c"), lexkey.Encode("d"),
+		lexkey.Encode("e"), lexkey.Encode("f"), lexkey.Encode("g"),
+	}
+	cases := []struct {
+		name      string
+		sort      kv.SortDirection
+		wantOrder []lexkey.LexKey
+	}{
+		{"ascending", kv.Ascending, keys},
+		{"descending", kv.Descending, []lexkey.LexKey{
+			lexkey.Encode("g"), lexkey.Encode("f"), lexkey.Encode("e"), lexkey.Encode("d"),
+			lexkey.Encode("c"), lexkey.Encode("b"), lexkey.Encode("a"),
+		}},
+	}
 	for _, provider := range providers {
-		t.Run(provider, func(t *testing.T) {
-			// Arrange
-			db := setup(t, provider)
-			args := kv.QueryArgs{
-				PartitionKey: partitionKey,
-				Operator:     kv.Scan,
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), args, kv.Ascending)
-
-			// Assert
-			assert.NoError(t, err)
-			assert.Len(t, results, 7) // "a", "b", "c", "d", "e", "f", "g"
-			assert.Equal(t, lexkey.Encode("a"), results[0].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("b"), results[1].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("c"), results[2].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("e"), results[4].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("f"), results[5].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("g"), results[6].PK.RowKey)
-		})
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				db := setup(t, provider)
+				args := kv.QueryArgs{PartitionKey: partitionKey, Operator: kv.Scan}
+				results, err := db.Query(t.Context(), args, tc.sort)
+				require.NoError(t, err)
+				require.Len(t, results, len(tc.wantOrder))
+				for i, rk := range tc.wantOrder {
+					assert.Equal(t, rk, results[i].PK.RowKey)
+				}
+			})
+		}
 	}
 }
 
@@ -643,33 +625,6 @@ func TestQueryPartitionScanWithLimit(t *testing.T) {
 			// Assert
 			assert.NoError(t, err)
 			assert.Len(t, results, 3)
-		})
-	}
-}
-
-func TestQueryPartitionScanDescending(t *testing.T) {
-	for _, provider := range providers {
-		t.Run(provider, func(t *testing.T) {
-			// Arrange
-			db := setup(t, provider)
-			args := kv.QueryArgs{
-				PartitionKey: partitionKey,
-				Operator:     kv.Scan,
-			}
-
-			// Act
-			results, err := db.Query(t.Context(), args, kv.Descending)
-
-			// Assert
-			assert.NoError(t, err)
-			assert.Len(t, results, 7) // "g", "f", "e", "d", "c", "b", "a"
-			assert.Equal(t, lexkey.Encode("g"), results[0].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("f"), results[1].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("e"), results[2].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("d"), results[3].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("c"), results[4].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("b"), results[5].PK.RowKey)
-			assert.Equal(t, lexkey.Encode("a"), results[6].PK.RowKey)
 		})
 	}
 }
@@ -1066,7 +1021,6 @@ func BenchmarkPut(b *testing.B) {
 	for _, provider := range providers {
 		b.Run(provider, func(b *testing.B) {
 			db := benchmarkSetup(b, provider)
-			defer db.Close()
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -1087,7 +1041,6 @@ func BenchmarkGet(b *testing.B) {
 	for _, provider := range providers {
 		b.Run(provider, func(b *testing.B) {
 			db := benchmarkSetup(b, provider)
-			defer db.Close()
 
 			// Pre-populate
 			for i := 0; i < 100; i++ {
@@ -1117,7 +1070,6 @@ func BenchmarkBatch(b *testing.B) {
 	for _, provider := range providers {
 		b.Run(provider, func(b *testing.B) {
 			db := benchmarkSetup(b, provider)
-			defer db.Close()
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {

@@ -103,7 +103,7 @@ func hashNodes(nodes []Branch) []byte {
 	h := hasherPool.Get().(*blake3.Hasher)
 	h.Reset()
 	for _, n := range nodes {
-		h.Write(n.Hash)
+		writeHasher(h, n.Hash)
 	}
 	sum := h.Sum(nil)
 	hasherPool.Put(h)
@@ -114,16 +114,13 @@ func (m *Tree) diffNode(ctx context.Context, prev, curr, space string, ref NodeP
 	prevHash, _, errPrev := m.getHash(ctx, prev, space, ref)
 	currHash, currVal, errCurr := m.getHash(ctx, curr, space, ref)
 
-	if errPrev != nil || errCurr != nil {
-		var combined error
-		if errPrev != nil && errCurr != nil {
-			combined = fmt.Errorf("get hash errors: prev=%v curr=%v", errPrev, errCurr)
-		} else if errPrev != nil {
-			combined = fmt.Errorf("get hash prev: %w", errPrev)
-		} else {
-			combined = fmt.Errorf("get hash curr: %w", errCurr)
-		}
-		return enumerators.Error[Leaf](combined)
+	switch {
+	case errPrev != nil && errCurr != nil:
+		return enumerators.Error[Leaf](fmt.Errorf("get hash errors: prev=%w curr=%w", errPrev, errCurr))
+	case errPrev != nil:
+		return enumerators.Error[Leaf](fmt.Errorf("get hash prev: %w", errPrev))
+	case errCurr != nil:
+		return enumerators.Error[Leaf](fmt.Errorf("get hash curr: %w", errCurr))
 	}
 
 	if ref == rootRef {

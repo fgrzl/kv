@@ -157,15 +157,14 @@ func (o *overlay) combineBooleanResults(tokenResults map[string]map[string]map[s
 		} else if tok.Op == OpAnd {
 			// Check if we have consecutive AND tokens (good candidate for bloom optimization)
 			andSequence := []string{}
-			if !tok.IsNot {
-				andSequence = append(andSequence, tok.Text)
-			} else {
+			if tok.IsNot {
 				// NOT token in AND position: exclude directly
 				set := tokenResults[tok.Text]
 				result = subtractEntityMaps(result, set)
 				i++
 				continue
 			}
+			andSequence = append(andSequence, tok.Text)
 
 			// Collect consecutive AND tokens (no NOT, same Op)
 			j := i + 1

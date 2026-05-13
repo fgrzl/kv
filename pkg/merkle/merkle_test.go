@@ -19,7 +19,11 @@ func setup(t *testing.T) *Tree {
 	path := filepath.Join(t.TempDir(), "merkle")
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	return NewTree(store)
 }
 
@@ -40,6 +44,12 @@ func leaves(refs ...string) enumerators.Enumerator[Leaf] {
 		ls[i] = leaf(r)
 	}
 	return enumerators.Slice(ls)
+}
+
+func buildEmptyThenNonEmptyStages(ctx context.Context, t *testing.T, m *Tree, emptyStage, nonEmptyStage, space string, nonemptyLeaves []Leaf) {
+	t.Helper()
+	require.NoError(t, m.Build(ctx, emptyStage, space, enumerators.Empty[Leaf]()))
+	require.NoError(t, m.Build(ctx, nonEmptyStage, space, enumerators.Slice(nonemptyLeaves)))
 }
 
 // --- Core Build & Root Hash Tests ---
@@ -216,7 +226,11 @@ func TestShouldHandleInvalidBranchingFactor(t *testing.T) {
 	// Arrange
 	store, err := pebble.NewPebbleStore(filepath.Join(t.TempDir(), "invalid"))
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	// Act
 	tree := NewTree(store, WithBranching(1))
@@ -313,7 +327,11 @@ func TestShouldHandleBuildWithDifferentBranchingFactors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := pebble.NewPebbleStore(filepath.Join(t.TempDir(), tc.name))
 			require.NoError(t, err)
-			defer store.Close()
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Errorf("close store: %v", err)
+				}
+			}()
 
 			m := NewTree(store, WithBranching(tc.branching))
 			stage := "test"
@@ -351,12 +369,7 @@ func TestShouldHandleDiffWithEmptyVsNonEmptyTrees(t *testing.T) {
 	nonEmptyStage := "nonempty"
 	space := "emptytest"
 
-	// Build empty tree
-	require.NoError(t, m.Build(ctx, emptyStage, space, enumerators.Empty[Leaf]()))
-
-	// Build non-empty tree
-	leaves := []Leaf{leaf("a"), leaf("b")}
-	require.NoError(t, m.Build(ctx, nonEmptyStage, space, enumerators.Slice(leaves)))
+	buildEmptyThenNonEmptyStages(ctx, t, m, emptyStage, nonEmptyStage, space, []Leaf{leaf("a"), leaf("b")})
 
 	// Act - diff empty -> non-empty
 	diffs, err := enumerators.ToSlice(m.Diff(ctx, emptyStage, nonEmptyStage, space))
@@ -399,9 +412,7 @@ func TestShouldHandleSymmetricDiffWithEmptyVsNonEmptyTrees(t *testing.T) {
 	nonEmptyStage := "nonempty"
 	space := "symmetrictest"
 
-	require.NoError(t, m.Build(ctx, emptyStage, space, enumerators.Empty[Leaf]()))
-	leaves := []Leaf{leaf("p"), leaf("q")}
-	require.NoError(t, m.Build(ctx, nonEmptyStage, space, enumerators.Slice(leaves)))
+	buildEmptyThenNonEmptyStages(ctx, t, m, emptyStage, nonEmptyStage, space, []Leaf{leaf("p"), leaf("q")})
 
 	// Act
 	diffs, err := enumerators.ToSlice(m.SymmetricDiff(ctx, emptyStage, nonEmptyStage, space))
@@ -1256,7 +1267,11 @@ func TestInvariantBranchingFactorRespected(t *testing.T) {
 		t.Run(fmt.Sprintf("branching_%d", tc.branching), func(t *testing.T) {
 			store, err := pebble.NewPebbleStore(filepath.Join(t.TempDir(), fmt.Sprintf("b%d", tc.branching)))
 			require.NoError(t, err)
-			defer store.Close()
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Errorf("close store: %v", err)
+				}
+			}()
 
 			m := NewTree(store, WithBranching(tc.branching))
 			stage := "test"

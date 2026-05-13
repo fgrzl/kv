@@ -8,6 +8,9 @@ import (
 	"github.com/fgrzl/lexkey"
 )
 
+// lexPartSep is the byte lexkey inserts between encoded composite parts (0x00 between lexkey segments).
+const lexPartSep byte = 0x00
+
 // rowKeyTimestampWidth is the fixed width of the timestamp portion of a row
 // key. lexkey encodes int64 and uint64 as 8 big-endian bytes.
 const rowKeyTimestampWidth = 8
@@ -28,7 +31,7 @@ func (ts *TimeSeries) orderedTimestamp(tsVal int64) any {
 	// int64 ordering in uint64 lexicographic space. To get descending order
 	// across the full int64 domain (including negatives) we complement that
 	// uint64. Equivalently: ^uint64(tsVal) ^ 0x8000... .
-	return ^uint64(tsVal) ^ 0x8000000000000000
+	return int64BitsToDescendingKeyUint(tsVal)
 }
 
 // encodeRowKey builds the row key for a sample with the given timestamp and
@@ -57,11 +60,11 @@ func (ts *TimeSeries) decodeRowKey(rk []byte) (int64, string, error) {
 	if ts.descending {
 		raw = ^raw
 	}
-	tsVal := int64(raw ^ 0x8000000000000000)
+	tsVal := descendingKeyUintToInt64(raw)
 	switch {
 	case len(rk) == rowKeyTimestampWidth:
 		return tsVal, "", nil
-	case rk[rowKeyTimestampWidth] != lexkey.Seperator:
+	case rk[rowKeyTimestampWidth] != lexPartSep:
 		return 0, "", errMalformedRowKey
 	default:
 		id := string(rk[rowKeyTimestampWidth+1:])
@@ -104,7 +107,7 @@ func (ts *TimeSeries) encodeRangeForBounds(from, to int64) (lexkey.LexKey, lexke
 	}
 	// descending: smallest encoded value corresponds to largest timestamp.
 	// Only to == MinInt64 would underflow on the to-1 conversion.
-	if to <= math.MinInt64 {
+	if to == math.MinInt64 {
 		return nil, nil, false
 	}
 	startRK := lexkey.Encode(ts.orderedTimestamp(to - 1))

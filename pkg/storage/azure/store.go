@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 
@@ -154,7 +155,6 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 	sem := make(chan struct{}, getBatchMaxConcurrency)
 
 	for partHex, slots := range byPartition {
-		partHex, slots := partHex, slots
 		if ctx.Err() != nil {
 			fillSlotsNotFound(slots, results)
 			continue
@@ -199,7 +199,6 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 	var partErr error
 
 	for _, rkHex := range pointGetRKHexes {
-		rkHex := rkHex
 		partWg.Add(1)
 		go func() {
 			defer partWg.Done()
@@ -212,7 +211,6 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 		}()
 	}
 	for _, chunk := range queryChunks {
-		chunk := chunk
 		partWg.Add(1)
 		go func() {
 			defer partWg.Done()
@@ -220,8 +218,17 @@ func (s *store) getBatchPartition(ctx context.Context, partHex string, slots []g
 				return
 			}
 			filter := buildPartitionRowKeysFilter(partHex, chunk)
-			pager := s.client.NewListEntitiesPager(filter, "PartitionKey,RowKey,Value", int32(len(chunk)))
-			defer pager.Close()
+			chunkLen := len(chunk)
+			if chunkLen > math.MaxInt32 {
+				assignFirstErr(&partMu, &partErr, fmt.Errorf("chunk size %d exceeds int32 max", chunkLen))
+				return
+			}
+			pager := s.client.NewListEntitiesPager(filter, "PartitionKey,RowKey,Value", int32(chunkLen))
+			defer func() {
+				if cerr := pager.Close(); cerr != nil {
+					assignFirstErr(&partMu, &partErr, cerr)
+				}
+			}()
 			fetchedValues := make(map[string][]byte, len(chunk))
 			for !pager.IsDone() {
 				entities, err := pager.FetchPage(ctx)
@@ -330,7 +337,7 @@ func splitBatchRowKeysForQuery(partHex string, rowKeyHexes []string) ([][]string
 
 	var chunkLens []int
 	for i, rkHex := range rowKeyHexes {
-		candidateLens := append(chunkLens, rkEscapedLens[i])
+		candidateLens := append(append([]int(nil), chunkLens...), rkEscapedLens[i])
 		candidateCount := len(chunk) + 1
 		if candidateCount <= getBatchMaxRowKeysPerQuery && calcFilterLen(candidateLens) <= getBatchMaxFilterLength {
 			chunk = append(chunk, rkHex)
@@ -560,6 +567,7 @@ func (s *store) batchSinglePartition(ctx context.Context, items []*kv.BatchItem)
 		for _, item := range chunk {
 			storedPK := pkToStore(item.PK)
 			switch item.Op {
+			case kv.NoOp:
 			case kv.Put:
 				encoded, err := s.values.Encode(item.Value)
 				if err != nil {

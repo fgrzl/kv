@@ -1,9 +1,26 @@
 package merkle
 
 import (
+	"fmt"
+	"math"
+
 	"github.com/fgrzl/kv"
 	"github.com/fgrzl/lexkey"
 )
+
+func merkleLevelUint8(level int) uint8 {
+	if level < 0 || level > math.MaxUint8 {
+		panic(fmt.Sprintf("merkle: node level out of uint8 range: %d", level))
+	}
+	return uint8(level)
+}
+
+func merkleIndexUint64(idx int) uint64 {
+	if idx < 0 {
+		panic(fmt.Sprintf("merkle: negative node index: %d", idx))
+	}
+	return uint64(idx)
+}
 
 // Row-key discriminator bytes. A single-byte prefix is shorter than the legacy
 // "node"/"meta"/"root" string prefixes and packs more keys per OData GetBatch
@@ -46,10 +63,11 @@ func nodeLevelRangeQuery(stage, space string, level, firstIndex, lastIndexInclus
 }
 
 func nodeLevelRangeQueryInPartition(partition lexkey.LexKey, level, firstIndex, lastIndexInclusive int) kv.QueryArgs {
+	lv := merkleLevelUint8(level)
 	return kv.QueryArgs{
 		PartitionKey: partition,
-		StartRowKey:  encodeNodeRowKey(uint8(level), uint64(firstIndex)),
-		EndRowKey:    encodeNodeRowKey(uint8(level), uint64(lastIndexInclusive)),
+		StartRowKey:  encodeNodeRowKey(lv, merkleIndexUint64(firstIndex)),
+		EndRowKey:    encodeNodeRowKey(lv, merkleIndexUint64(lastIndexInclusive)),
 		Operator:     kv.Between,
 	}
 }
@@ -73,7 +91,7 @@ func nodePK(stage, space string, level, index int) lexkey.PrimaryKey {
 }
 
 func nodePKInPartition(partition lexkey.LexKey, level, index int) lexkey.PrimaryKey {
-	return lexkey.NewPrimaryKey(partition, encodeNodeRowKey(uint8(level), uint64(index)))
+	return lexkey.NewPrimaryKey(partition, encodeNodeRowKey(merkleLevelUint8(level), merkleIndexUint64(index)))
 }
 
 func rootPK(stage, space string) lexkey.PrimaryKey {

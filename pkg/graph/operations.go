@@ -104,51 +104,14 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	nodePK := lexkey.NewPrimaryKey(g.nodePartition(), lexkey.Encode(id))
 	batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: nodePK})
 
-	// process outgoing edges (forward entries) streamingly
-	outPart := g.edgePartition(id)
-	outArgs := kv.QueryArgs{PartitionKey: outPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	outEnum := g.store.Enumerate(ctx, outArgs)
-	if err := enumerators.ForEach(outEnum, func(it *kv.Item) error {
-		var se storedEdge
-		if err := json.Unmarshal(it.Value, &se); err != nil {
-			// skip malformed entries
-			slog.WarnContext(ctx, "skipping malformed outgoing edge during delete", "node", id, "graph", g.name, "err", err)
-			return nil
-		}
-		pkF := lexkey.NewPrimaryKey(g.edgePartition(id), lexkey.Encode(se.To))
-		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(se.To), lexkey.Encode(id))
-		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkF})
-		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkR})
-		if len(batch) >= chunkSize {
-			return flush()
-		}
-		return nil
-	}); err != nil {
+	if err := g.forEachEdgeDeleteBatch(ctx, id, true, &batch, chunkSize, flush); err != nil {
 		slog.ErrorContext(ctx, "failed to enumerate outgoing edges", "node", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
-	// process incoming edges (reverse entries) streamingly
-	inPart := g.inEdgePartition(id)
-	inArgs := kv.QueryArgs{PartitionKey: inPart, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
-	inEnum := g.store.Enumerate(ctx, inArgs)
-	if err := enumerators.ForEach(inEnum, func(it *kv.Item) error {
-		var se storedEdge
-		if err := json.Unmarshal(it.Value, &se); err != nil {
-			slog.WarnContext(ctx, "skipping malformed incoming edge during delete", "node", id, "graph", g.name, "err", err)
-			return nil
-		}
-		pkR := lexkey.NewPrimaryKey(g.inEdgePartition(id), lexkey.Encode(se.From))
-		pkF := lexkey.NewPrimaryKey(g.edgePartition(se.From), lexkey.Encode(id))
-		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkR})
-		batch = append(batch, &kv.BatchItem{Op: kv.Delete, PK: pkF})
-		if len(batch) >= chunkSize {
-			return flush()
-		}
-		return nil
-	}); err != nil {
+	if err := g.forEachEdgeDeleteBatch(ctx, id, false, &batch, chunkSize, flush); err != nil {
 		slog.ErrorContext(ctx, "failed to enumerate incoming edges", "node", id, "graph", g.name, "err", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -160,4 +123,37 @@ func (g *graphStore) DeleteNode(ctx context.Context, id string) error {
 	}
 	slog.DebugContext(ctx, "node deleted", "id", id, "graph", g.name)
 	return nil
+}
+
+func (g *graphStore) forEachEdgeDeleteBatch(ctx context.Context, id string, outgoing bool, batch *[]*kv.BatchItem, chunkSize int, flush func() error) error {
+	part := g.inEdgePartition(id)
+	if outgoing {
+		part = g.edgePartition(id)
+	}
+	args := kv.QueryArgs{PartitionKey: part, StartRowKey: lexkey.Empty, EndRowKey: lexkey.Empty, Operator: kv.Scan}
+	enum := g.store.Enumerate(ctx, args)
+	return enumerators.ForEach(enum, func(it *kv.Item) error {
+		var se storedEdge
+		if err := json.Unmarshal(it.Value, &se); err != nil {
+			kind := "incoming"
+			if outgoing {
+				kind = "outgoing"
+			}
+			slog.WarnContext(ctx, "skipping malformed edge during delete", "kind", kind, "node", id, "graph", g.name, "err", err)
+			return nil
+		}
+		var first, second lexkey.PrimaryKey
+		if outgoing {
+			first = lexkey.NewPrimaryKey(g.edgePartition(id), lexkey.Encode(se.To))
+			second = lexkey.NewPrimaryKey(g.inEdgePartition(se.To), lexkey.Encode(id))
+		} else {
+			first = lexkey.NewPrimaryKey(g.inEdgePartition(id), lexkey.Encode(se.From))
+			second = lexkey.NewPrimaryKey(g.edgePartition(se.From), lexkey.Encode(id))
+		}
+		*batch = append(*batch, &kv.BatchItem{Op: kv.Delete, PK: first}, &kv.BatchItem{Op: kv.Delete, PK: second})
+		if len(*batch) >= chunkSize {
+			return flush()
+		}
+		return nil
+	})
 }

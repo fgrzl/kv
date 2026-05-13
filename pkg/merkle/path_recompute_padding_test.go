@@ -15,7 +15,11 @@ func TestUpdateLeafShouldErrorWhenPaddingSiblingIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-padding-path")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	tree := NewTree(base, WithBranching(3))
 	require.NoError(t, tree.Build(ctx, "st", "sp", leaves("a", "b")))

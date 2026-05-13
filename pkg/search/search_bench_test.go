@@ -16,7 +16,11 @@ func setupBenchOverlay(b *testing.B) SearchOverlay {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "bench", nil)
 }
 
@@ -329,21 +333,18 @@ func BenchmarkConcurrentSearch(b *testing.B) {
 	})
 }
 
-// BenchmarkSearchPageSmallLimit measures SearchPage performance with small limit (10 results).
-// This benchmarks the common case of returning a small page of results from a large result set.
-func BenchmarkSearchPageSmallLimit(b *testing.B) {
+func benchmarkSearchPageGolangCorpus(b *testing.B, entityCount, resultLimit, want int, titleFmt, bodyFmt string) {
+	b.Helper()
 	overlay := setupBenchOverlay(b)
 	ctx := context.Background()
 
-	// Index 10K entities using BatchIndex for efficiency.
-	// With 10 variations of the first word, each token appears ~1000 times.
-	entities := make([]SearchEntity, 0, 10000)
-	for i := 0; i < 10000; i++ {
+	entities := make([]SearchEntity, 0, entityCount)
+	for i := 0; i < entityCount; i++ {
 		entities = append(entities, SearchEntity{
 			ID: fmt.Sprintf("entity-%d", i),
 			Attributes: []Attribute{
-				{Field: "title", Value: fmt.Sprintf("golang programming guide part %d", i%10)},
-				{Field: "body", Value: fmt.Sprintf("Advanced topics about golang programming %d", i)},
+				{Field: "title", Value: fmt.Sprintf(titleFmt, i%10)},
+				{Field: "body", Value: fmt.Sprintf(bodyFmt, i)},
 			},
 			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
 		})
@@ -354,47 +355,31 @@ func BenchmarkSearchPageSmallLimit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 10})
+		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: resultLimit})
 		if err != nil {
 			b.Fatal(err)
 		}
-		if len(page.Models) != 10 {
-			b.Fatalf("expected 10 results, got %d", len(page.Models))
+		if len(page.Models) != want {
+			b.Fatalf("expected %d results, got %d", want, len(page.Models))
 		}
 	}
 }
 
+// BenchmarkSearchPageSmallLimit measures SearchPage performance with small limit (10 results).
+// This benchmarks the common case of returning a small page of results from a large result set.
+func BenchmarkSearchPageSmallLimit(b *testing.B) {
+	benchmarkSearchPageGolangCorpus(b, 10000, 10, 10,
+		"golang programming guide part %d",
+		"Advanced topics about golang programming %d",
+	)
+}
+
 // BenchmarkSearchPageMediumLimit measures SearchPage performance with medium limit (100 results).
 func BenchmarkSearchPageMediumLimit(b *testing.B) {
-	overlay := setupBenchOverlay(b)
-	ctx := context.Background()
-
-	// Index 50K entities using BatchIndex for efficiency.
-	entities := make([]SearchEntity, 0, 50000)
-	for i := 0; i < 50000; i++ {
-		entities = append(entities, SearchEntity{
-			ID: fmt.Sprintf("entity-%d", i),
-			Attributes: []Attribute{
-				{Field: "title", Value: fmt.Sprintf("golang programming guide %d", i%10)},
-				{Field: "body", Value: fmt.Sprintf("Content about golang %d", i)},
-			},
-			Payload: []byte(fmt.Sprintf(`{"id": %d}`, i)),
-		})
-	}
-	if err := overlay.BatchIndex(ctx, entities); err != nil {
-		b.Fatal(err)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		page, err := overlay.SearchPage(ctx, PageQuery{Text: "golang", Limit: 100})
-		if err != nil {
-			b.Fatal(err)
-		}
-		if len(page.Models) != 100 {
-			b.Fatalf("expected 100 results, got %d", len(page.Models))
-		}
-	}
+	benchmarkSearchPageGolangCorpus(b, 50000, 100, 100,
+		"golang programming guide %d",
+		"Content about golang %d",
+	)
 }
 
 // BenchmarkSearchPageLargeLimit measures SearchPage performance with large/no limit.
@@ -685,11 +670,12 @@ func BenchmarkSearchMultiTokenComplex(b *testing.B) {
 	for i := 0; i < 5000; i++ {
 		// Distribute tags to make complex queries meaningful
 		var tags string
-		if i%2 == 0 {
+		switch {
+		case i%2 == 0:
 			tags = "golang"
-		} else if i%3 == 0 {
+		case i%3 == 0:
 			tags = "rust"
-		} else {
+		default:
 			tags = "python"
 		}
 

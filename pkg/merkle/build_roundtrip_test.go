@@ -115,7 +115,11 @@ func TestBuildUsesSingleBatchChunksCall(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-counting")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap, WithBatchSize(500)) // multiple physical chunks for inner.Batch
@@ -138,7 +142,11 @@ func TestBuildWithSkipPruneAvoidsRemoveRange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-skipprune")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap, WithSkipPruneOnBuild(true))
@@ -152,7 +160,11 @@ func TestUpdateLeafUsesSingleGetBatchForPathRecompute(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-update-roundtrips")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap)
@@ -173,7 +185,11 @@ func TestAddLeafStableHeightUsesSingleGetBatchForPathRecompute(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-add-roundtrips")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap)

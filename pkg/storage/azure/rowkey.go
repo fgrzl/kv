@@ -34,8 +34,8 @@ func pkToStore(pk lexkey.PrimaryKey) lexkey.PrimaryKey {
 }
 
 func pkFromStore(pk lexkey.PrimaryKey) lexkey.PrimaryKey {
-	if bytes.Equal(pk.RowKey, emptyRowKeySentinel) {
-		return lexkey.PrimaryKey{PartitionKey: pk.PartitionKey, RowKey: nil}
+	return lexkey.PrimaryKey{
+		PartitionKey: pk.PartitionKey,
+		RowKey:       rowKeyFromStore(pk.RowKey),
 	}
-	return pk
 }

@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -94,7 +95,7 @@ func (r *Store) stripPrefix(stored string) string {
 func (r *Store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error) {
 	key := r.mkKeyHex(pk)
 	val, err := r.client.Get(ctx, key).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {
@@ -118,7 +119,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 		cmds[i] = pipe.Get(ctx, r.mkKeyHex(pk))
 	}
 	_, err := pipe.Exec(ctx)
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		slog.ErrorContext(ctx, "redis pipeline get failed", "key_count", len(keys), "err", err)
 		return nil, err
 	}
@@ -126,7 +127,7 @@ func (r *Store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 	results := make([]kv.BatchGetResult, len(keys))
 	for i, cmd := range cmds {
 		val, err := cmd.Bytes()
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			results[i] = kv.BatchGetResult{Item: nil, Found: false}
 			continue
 		}
@@ -313,6 +314,7 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	for i, item := range items {
 		key := r.mkKeyHex(item.PK)
 		switch item.Op {
+		case kv.NoOp:
 		case kv.Put:
 			encoded, err := r.values.Encode(item.Value)
 			if err != nil {
@@ -329,7 +331,7 @@ func (r *Store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "batch exec failed", "item_count", len(items), "err", err)
-		return fmt.Errorf("%w: %v", kv.ErrBackendExecution, err)
+		return fmt.Errorf("%w: %w", kv.ErrBackendExecution, err)
 	}
 	return nil
 }
@@ -366,6 +368,12 @@ func (r *Store) Close() error {
 
 func getOperatorFunctions(op kv.QueryOperator) func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 	switch op {
+	case kv.Scan:
+		return func(_ lexkey.PrimaryKey, _ lexkey.RangeKey) bool { return true }
+	case kv.Equal:
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
+			return bytes.Equal(pk.RowKey, rk.StartRowKey)
+		}
 	case kv.GreaterThan:
 		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 			return bytes.Compare(pk.RowKey, rk.StartRowKey) > 0

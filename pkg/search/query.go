@@ -59,7 +59,7 @@ func tokenizeQuery(text string) []QueryToken {
 	}
 
 	var result []QueryToken
-	var currentOp QueryOp = OpAnd
+	var currentOp = OpAnd
 
 	for _, part := range parts {
 		// Skip empty parts
@@ -124,31 +124,26 @@ func smartSplit(text string) []string {
 	escaped := false
 
 	for _, r := range text {
-		if escaped {
-			// Previous character was backslash: include current character literally
+		switch {
+		case escaped:
 			current.WriteRune(r)
 			escaped = false
-		} else if r == '\\' && inQuote {
-			// Backslash inside quotes: mark next character as escaped
+		case r == '\\' && inQuote:
 			escaped = true
 			current.WriteRune(r)
-		} else if (r == '"' || r == '\'') && !inQuote {
-			// Start of quote
+		case (r == '"' || r == '\'') && !inQuote:
 			inQuote = true
 			quoteChar = r
 			current.WriteRune(r)
-		} else if r == quoteChar && inQuote {
-			// End of quote (only if not escaped)
+		case r == quoteChar && inQuote:
 			inQuote = false
 			current.WriteRune(r)
-		} else if unicode.IsSpace(r) && !inQuote {
-			// Whitespace outside quotes: delimiter
+		case unicode.IsSpace(r) && !inQuote:
 			if current.Len() > 0 {
 				result = append(result, current.String())
 				current.Reset()
 			}
-		} else {
-			// Regular character
+		default:
 			current.WriteRune(r)
 		}
 	}

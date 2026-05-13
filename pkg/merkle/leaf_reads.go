@@ -29,10 +29,11 @@ func encodeLeafValue(leaf Leaf) []byte {
 }
 
 func encodeLeafValueErr(leaf Leaf) ([]byte, error) {
-	if len(leaf.Ref) > math.MaxUint32 {
-		return nil, fmt.Errorf("leaf ref length %d exceeds uint32 max", len(leaf.Ref))
+	lr := len(leaf.Ref)
+	if lr > math.MaxUint32 {
+		return nil, fmt.Errorf("leaf ref length %d exceeds uint32 max", lr)
 	}
-	refLen := uint32(len(leaf.Ref))
+	refLen := uint32(lr)
 	buf := make([]byte, 4+int(refLen)+len(leaf.Hash))
 	binary.LittleEndian.PutUint32(buf, refLen)
 	copy(buf[4:], leaf.Ref)

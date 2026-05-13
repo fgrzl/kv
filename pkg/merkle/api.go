@@ -66,7 +66,6 @@ func (m *Tree) Diff(ctx context.Context, prev, curr, space string) enumerators.E
 
 // SymmetricDiff returns added and removed leaves between two trees (curr vs prev, prev vs curr).
 func (m *Tree) SymmetricDiff(ctx context.Context, prev, curr, space string) enumerators.Enumerator[Leaf] {
-
 	visited := make(map[string]struct{})
 
 	return enumerators.Chain(

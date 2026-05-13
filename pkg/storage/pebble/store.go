@@ -16,6 +16,15 @@ import (
 	"github.com/fgrzl/lexkey"
 )
 
+func logCloseErr(ctx context.Context, msg string, c io.Closer) {
+	if c == nil {
+		return
+	}
+	if err := c.Close(); err != nil {
+		slog.ErrorContext(ctx, msg, "err", err)
+	}
+}
+
 // PebbleDB defines the interface for Pebble database operations.
 type PebbleDB interface {
 	Get(key []byte) ([]byte, io.Closer, error)
@@ -72,7 +81,7 @@ func (s *store) Get(ctx context.Context, pk lexkey.PrimaryKey) (*kv.Item, error)
 		}
 		return nil, err
 	}
-	defer closer.Close()
+	defer logCloseErr(ctx, "pebble get closer", closer)
 	decoded, err := s.values.Decode(value)
 	if err != nil {
 		return nil, err
@@ -94,17 +103,17 @@ func (s *store) GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]kv.B
 				continue
 			}
 			if closer != nil {
-				closer.Close()
+				logCloseErr(ctx, "pebble getbatch closer", closer)
 			}
 			return nil, err
 		}
 		decoded, err := s.values.Decode(value)
 		if err != nil {
-			closer.Close()
+			logCloseErr(ctx, "pebble getbatch decode closer", closer)
 			return nil, err
 		}
 		results[i] = kv.BatchGetResult{Item: &kv.Item{PK: pk, Value: append([]byte{}, decoded...)}, Found: true}
-		closer.Close()
+		logCloseErr(ctx, "pebble getbatch success closer", closer)
 	}
 	return results, nil
 }
@@ -136,7 +145,7 @@ func (s *store) Insert(ctx context.Context, item *kv.Item) error {
 	key := item.PK.Encode()
 	_, closer, err := s.db.Get(key)
 	if err == nil {
-		closer.Close()
+		logCloseErr(ctx, "pebble insert exists closer", closer)
 		return fmt.Errorf("key already exists: %v", item.PK)
 	}
 	if !errors.Is(err, pebble.ErrNotFound) {
@@ -166,7 +175,7 @@ func (s *store) Remove(ctx context.Context, pk lexkey.PrimaryKey) error {
 // RemoveBatch deletes multiple items by primary key.
 func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error {
 	batch := s.db.NewBatch()
-	defer batch.Close()
+	defer logCloseErr(ctx, "pebble removebatch batch", batch)
 	for _, pk := range keys {
 		if err := batch.Delete(pk.Encode(), nil); err != nil {
 			return err
@@ -178,7 +187,7 @@ func (s *store) RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) erro
 // RemoveRange deletes all items in a key range.
 func (s *store) RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error {
 	batch := s.db.NewBatch()
-	defer batch.Close()
+	defer logCloseErr(ctx, "pebble removerange batch", batch)
 	if err := batch.DeleteRange(
 		lexkey.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.StartRowKey).Encode(),
 		lexkey.NewPrimaryKey(rangeKey.PartitionKey, rangeKey.EndRowKey).Encode(),
@@ -195,7 +204,7 @@ func (s *store) Batch(ctx context.Context, items []*kv.BatchItem) error {
 		return nil
 	}
 	batch := s.db.NewBatch()
-	defer batch.Close()
+	defer logCloseErr(ctx, "pebble batch", batch)
 	for _, item := range items {
 		if err := s.applyBatchOp(batch, item); err != nil {
 			return fmt.Errorf("batch operation failed for key %v: %w", item.PK, err)
@@ -209,7 +218,7 @@ func (s *store) BatchChunks(ctx context.Context, items enumerators.Enumerator[*k
 	chunks := enumerators.ChunkByCount(items, chunkSize)
 	return enumerators.ForEach(chunks, func(chunk enumerators.Enumerator[*kv.BatchItem]) error {
 		batch := s.db.NewBatch()
-		defer batch.Close()
+		defer logCloseErr(ctx, "pebble batchchunks batch", batch)
 		err := enumerators.ForEach(chunk, func(item *kv.BatchItem) error {
 			return s.applyBatchOp(batch, item)
 		})
@@ -258,7 +267,7 @@ func (s *store) enumerateRange(ctx context.Context, args kv.QueryArgs) enumerato
 		return enumerators.Error[*kv.Item](err)
 	}
 	if !seek(iter, opts) {
-		defer iter.Close()
+		defer logCloseErr(ctx, "pebble enumerate iter", iter)
 		if iter.Error() != nil {
 			return enumerators.Error[*kv.Item](iter.Error())
 		}
@@ -365,6 +374,14 @@ func getOperatorFunctions(operator kv.QueryOperator) (
 	case kv.Scan:
 		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
 				return true
+			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
+				return iter.SeekGE(opts.LowerBound)
+			}, func(iter *pebble.Iterator) bool {
+				return iter.Next()
+			}
+	case kv.Equal:
+		return func(pk lexkey.PrimaryKey, rk lexkey.RangeKey) bool {
+				return bytes.Equal(pk.RowKey, rk.StartRowKey)
 			}, func(iter *pebble.Iterator, opts *pebble.IterOptions) bool {
 				return iter.SeekGE(opts.LowerBound)
 			}, func(iter *pebble.Iterator) bool {

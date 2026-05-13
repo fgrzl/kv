@@ -50,10 +50,6 @@ func (i *indexStore) documentPartition() lexkey.LexKey {
 	return lexkey.Encode("index", i.name, "document")
 }
 
-func (i *indexStore) metaPartition() lexkey.LexKey {
-	return lexkey.Encode("index", i.name, "meta")
-}
-
 // Index adds or updates a document in the inverted index.
 func (i *indexStore) Index(ctx context.Context, doc Document) error {
 	ctx, span := tracer.Start(ctx, "index.Index",

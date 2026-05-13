@@ -22,8 +22,9 @@ func makeSequentialLeaves(count int) []Leaf {
 	return leaves
 }
 
-func mustRootHash(t *testing.T, tree *Tree, ctx context.Context, stage, space string) []byte {
+func mustRootHash(ctx context.Context, t *testing.T, tree *Tree, stage string) []byte {
 	t.Helper()
+	const space = "regression"
 	root, err := tree.GetRootHash(ctx, stage, space)
 	require.NoError(t, err)
 	return root
@@ -56,7 +57,7 @@ func TestUpdateLeafShouldMatchFullRebuildAtDepth(t *testing.T) {
 	require.NoError(t, actual.UpdateLeaf(ctx, stage, space, 9, updated[9]))
 	require.NoError(t, expected.Build(ctx, stage, space, explicitLeaves(updated...)))
 
-	assert.Equal(t, mustRootHash(t, expected, ctx, stage, space), mustRootHash(t, actual, ctx, stage, space))
+	assert.Equal(t, mustRootHash(ctx, t, expected, stage), mustRootHash(ctx, t, actual, stage))
 }
 
 func TestAddLeafShouldMatchFullRebuildWhenTreeHeightChanges(t *testing.T) {
@@ -76,7 +77,7 @@ func TestAddLeafShouldMatchFullRebuildWhenTreeHeightChanges(t *testing.T) {
 	expectedLeaves := append(append([]Leaf(nil), initial...), newLeaf)
 	require.NoError(t, expected.Build(ctx, stage, space, explicitLeaves(expectedLeaves...)))
 
-	assert.Equal(t, mustRootHash(t, expected, ctx, stage, space), mustRootHash(t, actual, ctx, stage, space))
+	assert.Equal(t, mustRootHash(ctx, t, expected, stage), mustRootHash(ctx, t, actual, stage))
 	count, err := actual.GetLeafCount(ctx, stage, space)
 	require.NoError(t, err)
 	assert.Equal(t, len(expectedLeaves), count)
@@ -98,7 +99,7 @@ func TestRemoveLeafShouldMatchFullRebuildWithDeletedMarkerAtDepth(t *testing.T) 
 	expectedLeaves[11] = Leaf{Hash: deletedHash()}
 	require.NoError(t, expected.Build(ctx, stage, space, explicitLeaves(expectedLeaves...)))
 
-	assert.Equal(t, mustRootHash(t, expected, ctx, stage, space), mustRootHash(t, actual, ctx, stage, space))
+	assert.Equal(t, mustRootHash(ctx, t, expected, stage), mustRootHash(ctx, t, actual, stage))
 	deleted, err := actual.GetLeaf(ctx, stage, space, 11)
 	require.NoError(t, err)
 	assert.Equal(t, "", deleted.Ref)
@@ -111,14 +112,14 @@ func TestUpdateLeafOutOfBoundsShouldNotPersistOrphanRow(t *testing.T) {
 	stage := "oob-update"
 	space := "regression"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B")))
-	originalRoot := mustRootHash(t, m, ctx, stage, space)
+	originalRoot := mustRootHash(ctx, t, m, stage)
 
 	invalidIndex := 10
 	err := m.UpdateLeaf(ctx, stage, space, invalidIndex, leaf("X"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "out of bounds")
-	assert.Equal(t, originalRoot, mustRootHash(t, m, ctx, stage, space))
+	assert.Equal(t, originalRoot, mustRootHash(ctx, t, m, stage))
 	count, err := m.GetLeafCount(ctx, stage, space)
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
@@ -135,14 +136,14 @@ func TestRemoveLeafOutOfBoundsShouldNotPersistOrphanRow(t *testing.T) {
 	stage := "oob-remove"
 	space := "regression"
 	require.NoError(t, m.Build(ctx, stage, space, leaves("A", "B")))
-	originalRoot := mustRootHash(t, m, ctx, stage, space)
+	originalRoot := mustRootHash(ctx, t, m, stage)
 
 	invalidIndex := 10
 	err := m.RemoveLeaf(ctx, stage, space, invalidIndex)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "out of bounds")
-	assert.Equal(t, originalRoot, mustRootHash(t, m, ctx, stage, space))
+	assert.Equal(t, originalRoot, mustRootHash(ctx, t, m, stage))
 	count, err := m.GetLeafCount(ctx, stage, space)
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)

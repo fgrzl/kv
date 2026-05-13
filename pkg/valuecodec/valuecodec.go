@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -109,11 +110,16 @@ func (c *Codec) Encode(value []byte) ([]byte, error) {
 		return value, nil
 	}
 
+	decodedLen := len(value)
+	if decodedLen > math.MaxUint32 {
+		return nil, fmt.Errorf("value length %d exceeds max uint32", decodedLen)
+	}
+
 	framed := make([]byte, wireSize)
 	copy(framed, magic[:])
 	framed[versionOffset] = formatVersion
 	framed[algorithmOffset] = byte(c.config.Algorithm.ID())
-	binary.BigEndian.PutUint32(framed[decodedSizeOffset:payloadChecksumOffset], uint32(len(value)))
+	binary.BigEndian.PutUint32(framed[decodedSizeOffset:payloadChecksumOffset], uint32(decodedLen))
 	binary.BigEndian.PutUint32(framed[payloadChecksumOffset:headerSize], crc32.ChecksumIEEE(encoded))
 	copy(framed[headerSize:], encoded)
 
@@ -151,7 +157,7 @@ func (c *Codec) Decode(value []byte) ([]byte, error) {
 	}
 
 	expectedDecodedSize := binary.BigEndian.Uint32(value[decodedSizeOffset:payloadChecksumOffset])
-	if uint32(len(decoded)) != expectedDecodedSize {
+	if int64(len(decoded)) != int64(expectedDecodedSize) {
 		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrIntegrityCheckFailed, expectedDecodedSize, len(decoded))
 	}
 
@@ -198,9 +204,11 @@ func (z *Zstd) Compress(src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer encoder.Close()
-
-	return encoder.EncodeAll(src, nil), nil
+	encoded := encoder.EncodeAll(src, nil)
+	if closeErr := encoder.Close(); closeErr != nil {
+		return nil, fmt.Errorf("close encoder: %w", closeErr)
+	}
+	return encoded, nil
 }
 
 func (z *Zstd) Decompress(src []byte) ([]byte, error) {

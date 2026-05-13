@@ -15,7 +15,11 @@ func createTestIndex(t *testing.T) InvertedIndex {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "test")
 }
 
@@ -323,7 +327,11 @@ func TestShouldIsolateSeparateIndexInstancesOnSameStore(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	ctx := context.Background()
 
 	idx1 := New(store, "index1")

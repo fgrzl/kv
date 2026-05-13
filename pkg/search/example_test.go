@@ -17,13 +17,21 @@ func Example() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("remove temp dir: %v", err)
+		}
+	}()
 
 	store, err := pebble.NewPebbleStore(dir)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close store: %v", err)
+		}
+	}()
 
 	// Create search overlay
 	search := searchoverlay.New(store, "docs", nil)
@@ -50,7 +58,7 @@ func Example() {
 	}
 
 	if err := search.BatchIndex(ctx, entities); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	// Search for entities
@@ -58,7 +66,7 @@ func Example() {
 		Text: "golang",
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	for _, hit := range results {
@@ -76,7 +84,7 @@ func Example() {
 	}
 
 	if err := search.Index(ctx, updatedEntity); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	// Old token "programming" is removed, new token "advanced" is added
@@ -84,7 +92,7 @@ func Example() {
 		Text: "programming",
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Printf("Results for 'programming': %d\n", len(results))
 
@@ -92,7 +100,7 @@ func Example() {
 		Text: "advanced",
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Printf("Results for 'advanced': %d\n", len(results))
 
@@ -108,13 +116,21 @@ func Example_fieldScoping() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("remove temp dir: %v", err)
+		}
+	}()
 
 	store, err := pebble.NewPebbleStore(dir)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close store: %v", err)
+		}
+	}()
 
 	search := searchoverlay.New(store, "products", nil)
 	ctx := context.Background()
@@ -140,7 +156,7 @@ func Example_fieldScoping() {
 	}
 
 	if err := search.BatchIndex(ctx, products); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	// Search across all fields
@@ -148,7 +164,7 @@ func Example_fieldScoping() {
 		Text: "apple",
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Printf("All fields: %d results\n", len(results))
 
@@ -158,7 +174,7 @@ func Example_fieldScoping() {
 		Fields: []string{"category"},
 	})
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	fmt.Printf("Category only: %d results\n", len(results))
 

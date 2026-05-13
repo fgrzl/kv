@@ -15,7 +15,11 @@ func TestRecomputeAllInternalNodesShouldStreamThroughSingleBatchChunksCall(t *te
 	path := filepath.Join(t.TempDir(), "merkle-recompute-full")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap, WithBatchSize(2))

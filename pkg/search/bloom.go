@@ -10,7 +10,7 @@ import (
 type BloomFilter struct {
 	bits []byte // Bit array
 	size uint64 // Number of bits
-	k    int    // Number of hash functions
+	k    uint8  // Number of hash functions (3 or 4)
 }
 
 // NewBloomFilter creates a new bloom filter sized for the expected number of elements.
@@ -28,7 +28,7 @@ func NewBloomFilter(expectedElements int) *BloomFilter {
 
 	// Optimal number of hash functions: k = m/n * ln(2)
 	// For m=10n: k ≈ 6.93, we use k=3-4 for balance
-	k := 3
+	var k uint8 = 3
 	if expectedElements > 100000 {
 		k = 4
 	}
@@ -44,7 +44,7 @@ func NewBloomFilter(expectedElements int) *BloomFilter {
 // It computes k hash values and sets the corresponding bits.
 func (b *BloomFilter) Add(s string) {
 	hash1, hash2 := b.hashPair(s)
-	for i := 0; i < b.k; i++ {
+	for i := uint64(0); i < uint64(b.k); i++ {
 		idx := b.hashAt(hash1, hash2, i)
 		byteIdx := idx / 8
 		bitIdx := idx % 8
@@ -57,7 +57,7 @@ func (b *BloomFilter) Add(s string) {
 // Returns false if any bit is unset (definitely not in set).
 func (b *BloomFilter) Contains(s string) bool {
 	hash1, hash2 := b.hashPair(s)
-	for i := 0; i < b.k; i++ {
+	for i := uint64(0); i < uint64(b.k); i++ {
 		idx := b.hashAt(hash1, hash2, i)
 		byteIdx := idx / 8
 		bitIdx := idx % 8
@@ -91,8 +91,8 @@ func fnv1a64String(s string) uint64 {
 
 // hashAt computes the i-th hash value using double hashing:
 // hash(i) = (hash1 + i*hash2) mod size.
-func (b *BloomFilter) hashAt(hash1, hash2 uint64, i int) uint64 {
-	return (hash1 + uint64(i)*hash2) % b.size
+func (b *BloomFilter) hashAt(hash1, hash2, i uint64) uint64 {
+	return (hash1 + i*hash2) % b.size
 }
 
 // EstimatedCardinality returns an estimate of how many elements have been added.
@@ -119,21 +119,38 @@ func (b *BloomFilter) EstimatedCardinality() int {
 		}
 	}
 
-	emptyBits := int(b.size) - setBits
+	size := b.size
+	setU := uint64(setBits)
+	if setU > size {
+		setU = size
+	}
+	empty := size - setU
 
 	// If no empty bits, filter is fully saturated—return upper bound estimate
-	if emptyBits == 0 {
-		return int(b.size) / b.k
+	if empty == 0 {
+		return clampUint64ToInt(size / uint64(b.k))
 	}
 
 	// If all bits are empty (filter not used), return 0
-	if emptyBits == int(b.size) {
+	if empty == size {
 		return 0
 	}
 
 	// Standard cardinality estimation: -m/k * ln(X/m)
-	// emptyBits/size is in range (0, 1), so ln(emptyBits/size) is in range (-∞, 0)
-	// The negation makes the final result positive.
-	x := float64(emptyBits) / float64(b.size)
-	return int(float64(b.size) / float64(b.k) * -math.Log(x))
+	x := float64(empty) / float64(size)
+	out := float64(size) / float64(b.k) * -math.Log(x)
+	if out > float64(math.MaxInt) {
+		return math.MaxInt
+	}
+	if out < 0 {
+		return 0
+	}
+	return int(out)
+}
+
+func clampUint64ToInt(v uint64) int {
+	if v > uint64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(v)
 }

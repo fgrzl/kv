@@ -36,13 +36,11 @@ func (e *enumerator) MoveNext() bool {
 
 // Current returns the current key-value pair or an error if iteration is invalid.
 func (e *enumerator) Current() (string, error) {
-
 	if e.iter.Err() != nil {
 		return "", e.iter.Err()
 	}
 
 	return e.iter.Val(), nil
-
 }
 
 // Err returns any encountered error.

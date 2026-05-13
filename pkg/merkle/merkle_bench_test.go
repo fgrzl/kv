@@ -22,7 +22,11 @@ func setupBenchMerkle(b *testing.B) *Tree {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	return NewTree(store)
 }
 
@@ -318,22 +322,18 @@ func BenchmarkDiffIdentical(b *testing.B) {
 	}
 }
 
-// BenchmarkDiffSparseChange measures diff performance with minimal changes (real ingestion case).
-// CRITICAL: Verifies logarithmic diff descent - no accidental full scans.
-func BenchmarkDiffSparseChange(b *testing.B) {
+// benchmarkDiffSparseChange runs sparse diff where only one leaf differs between prev/curr.
+func benchmarkDiffSparseChange(b *testing.B, leafCount, mutateIndex int) {
 	m := setupBenchMerkle(b)
 	ctx := context.Background()
 
-	const leafCount = 10_000
 	if err := m.Build(ctx, "prev", "bench", benchLeaves(leafCount)); err != nil {
 		b.Fatal(err)
 	}
 	if err := m.Build(ctx, "curr", "bench", benchLeaves(leafCount)); err != nil {
 		b.Fatal(err)
 	}
-
-	// Mutate a single leaf to create sparse diff
-	if err := m.UpdateLeaf(ctx, "curr", "bench", 1234, leaf("changed")); err != nil {
+	if err := m.UpdateLeaf(ctx, "curr", "bench", mutateIndex, leaf("changed")); err != nil {
 		b.Fatal(err)
 	}
 
@@ -346,33 +346,17 @@ func BenchmarkDiffSparseChange(b *testing.B) {
 	}
 }
 
+// BenchmarkDiffSparseChange measures diff performance with minimal changes (real ingestion case).
+// CRITICAL: Verifies logarithmic diff descent - no accidental full scans.
+func BenchmarkDiffSparseChange(b *testing.B) {
+	benchmarkDiffSparseChange(b, 10_000, 1234)
+}
+
 // BenchmarkDiffSparseChange_100k measures diff performance at scale (production ingestion case).
 // CRITICAL: This is the number you quote when justifying the system.
 // Validates O(log N) diff descent at 100k leaves with 1 change.
 func BenchmarkDiffSparseChange_100k(b *testing.B) {
-	m := setupBenchMerkle(b)
-	ctx := context.Background()
-
-	const leafCount = 100_000
-	if err := m.Build(ctx, "prev", "bench", benchLeaves(leafCount)); err != nil {
-		b.Fatal(err)
-	}
-	if err := m.Build(ctx, "curr", "bench", benchLeaves(leafCount)); err != nil {
-		b.Fatal(err)
-	}
-
-	// Mutate a single leaf to create sparse diff
-	if err := m.UpdateLeaf(ctx, "curr", "bench", 12345, leaf("changed")); err != nil {
-		b.Fatal(err)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it := m.Diff(ctx, "prev", "curr", "bench")
-		if err := enumerators.ForEach(it, func(Leaf) error { return nil }); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchmarkDiffSparseChange(b, 100_000, 12345)
 }
 
 // BenchmarkApplyLeafMutations_Scale measures batched mutation performance at different tree sizes.

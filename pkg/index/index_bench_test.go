@@ -18,7 +18,11 @@ func setupBenchIndex(b *testing.B) InvertedIndex {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "bench")
 }
 
@@ -486,10 +490,11 @@ func BenchmarkMixedWorkload(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			if i%3 == 0 {
+			switch i % 3 {
+			case 0:
 				// Search operation (2/3 of load)
 				_, _ = idx.Search(ctx, "golang")
-			} else if i%3 == 1 {
+			case 1:
 				// Index operation (1/3 of load)
 				mu.Lock()
 				docID := counter
@@ -502,7 +507,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 					},
 				}
 				_ = idx.Index(ctx, doc)
-			} else {
+			default:
 				// Count operation (rest)
 				_, _ = idx.DocumentCount(ctx)
 			}

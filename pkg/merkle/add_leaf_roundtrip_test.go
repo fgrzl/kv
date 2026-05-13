@@ -15,7 +15,11 @@ func TestAddLeafShouldUseOneGetBatchAndOneBatchForStableHeight(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "merkle-add-roundtrip")
 	base, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	t.Cleanup(func() {
+		if err := base.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	wrap := newCountingKV(base)
 	tree := NewTree(wrap)

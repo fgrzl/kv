@@ -41,7 +41,9 @@ func (m *mockTableClient) GetEntity(ctx context.Context, partitionKey, rowKey st
 
 func (m *mockTableClient) UpsertEntity(ctx context.Context, entity []byte, mode string) error {
 	var e map[string]interface{}
-	json.Unmarshal(entity, &e)
+	if err := json.Unmarshal(entity, &e); err != nil {
+		return err
+	}
 	key := e["PartitionKey"].(string) + ":" + e["RowKey"].(string)
 	m.data[key] = entity
 	return nil
@@ -49,7 +51,9 @@ func (m *mockTableClient) UpsertEntity(ctx context.Context, entity []byte, mode 
 
 func (m *mockTableClient) AddEntity(ctx context.Context, entity []byte) error {
 	var e map[string]interface{}
-	json.Unmarshal(entity, &e)
+	if err := json.Unmarshal(entity, &e); err != nil {
+		return err
+	}
 	key := e["PartitionKey"].(string) + ":" + e["RowKey"].(string)
 	if _, exists := m.data[key]; exists {
 		return &client.AzureError{StatusCode: 409, Code: "EntityAlreadyExists", Message: "conflict"}

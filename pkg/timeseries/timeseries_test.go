@@ -19,7 +19,11 @@ func setupTS(t *testing.T) *TimeSeries {
 	path := filepath.Join(t.TempDir(), "ts")
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "testns")
 }
 
@@ -27,7 +31,11 @@ func setupTSDescending(t *testing.T) *TimeSeries {
 	path := filepath.Join(t.TempDir(), "ts-desc")
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "testns", WithDescending(true))
 }
 

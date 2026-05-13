@@ -62,7 +62,11 @@ func TestMultiTokenImplicitAnd(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -87,7 +91,11 @@ func TestMultiTokenExplicitOr(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -116,7 +124,11 @@ func TestMultiTokenNot(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -143,7 +155,11 @@ func TestMultiTokenComplexExpression(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -169,7 +185,11 @@ func TestMultiTokenWithFieldFilter(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -201,7 +221,11 @@ func TestMultiTokenSearchPageWithOr(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -235,7 +259,11 @@ func TestMultiTokenSingleTokenOptimization(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -257,7 +285,11 @@ func TestMultiTokenQuotedPhrase(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)
@@ -283,7 +315,11 @@ func TestMultiTokenEmptyResults(t *testing.T) {
 	path := t.TempDir()
 	store, err := pebble.NewPebbleStore(path)
 	require.NoError(t, err)
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	overlay := New(store, "test", slog.Default())
 
 	setupMultiTokenTestData(t, overlay)

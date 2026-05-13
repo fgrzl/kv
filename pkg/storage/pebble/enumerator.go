@@ -61,7 +61,6 @@ func (e *enumerator) MoveNext() bool {
 
 // Current returns the current key-value pair or an error if iteration is invalid.
 func (e *enumerator) Current() (KeyValuePair, error) {
-
 	if !e.valid {
 		return KeyValuePair{}, errors.New("iterator is not valid")
 	}
@@ -73,7 +72,6 @@ func (e *enumerator) Current() (KeyValuePair, error) {
 		Key:   key,
 		Value: value,
 	}, nil
-
 }
 
 // Err returns any encountered error.
@@ -84,7 +82,12 @@ func (e *enumerator) Err() error {
 // Dispose closes the iterator.
 func (e *enumerator) Dispose() {
 	e.disposed.Do(func() {
-		e.iter.Close()
+		if e.iter == nil {
+			return
+		}
+		if err := e.iter.Close(); err != nil && e.err == nil {
+			e.err = err
+		}
 		e.iter = nil
 	})
 }

@@ -26,7 +26,11 @@ func TestShouldNotExceedUpdateLeafAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	// Build 10K tree (same as benchmark)
@@ -75,7 +79,11 @@ func TestShouldNotExceedAddLeafAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	// Build initial tree (smaller for add operations to be stable)
@@ -127,7 +135,11 @@ func TestShouldNotExceedDiffSparseChangeAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	// Build 100K tree in "prev" stage
@@ -195,7 +207,11 @@ func TestShouldNotExceedApplyLeafMutationsAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	leaves := generateTestLeaves(10_000)
@@ -243,7 +259,11 @@ func TestShouldNotExceedAppendOnlyApplyLeafMutationsAllocationBudget(t *testing.
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	leaves := generateTestLeaves(10_000)
@@ -300,7 +320,11 @@ func TestShouldNotExceedMixedApplyLeafMutationsAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	stages := make([]string, measuredRuns)
@@ -357,7 +381,11 @@ func TestShouldNotExceedGetLeavesByIndexAllocationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 	tree := NewTree(store)
 
 	leaves := generateTestLeaves(100_000)

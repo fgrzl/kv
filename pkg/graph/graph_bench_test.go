@@ -16,7 +16,11 @@ func setupBenchGraph(b *testing.B) Graph {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	return NewGraph(store, "bench")
 }
 

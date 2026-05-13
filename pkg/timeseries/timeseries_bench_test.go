@@ -16,7 +16,11 @@ func setupBenchTS(b *testing.B) *TimeSeries {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	return New(store, "bench")
 }
 
@@ -82,7 +86,11 @@ func BenchmarkLatest(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { store.Close() })
+	b.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			b.Errorf("close store: %v", err)
+		}
+	})
 	ts := New(store, "bench", WithDescending(true))
 	ctx := context.Background()
 	value := []byte("value")

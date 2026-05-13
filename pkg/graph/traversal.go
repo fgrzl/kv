@@ -32,7 +32,7 @@ func (g *graphStore) BFS(ctx context.Context, start string, visit func(id string
 	for len(queue) > 0 {
 		select {
 		case <-ctx.Done():
-			slog.DebugContext(ctx, "BFS cancelled", "graph", g.name, "visited", visited)
+			slog.DebugContext(ctx, "BFS canceled", "graph", g.name, "visited", visited)
 			span.SetAttributes(attribute.Int("visited", visited))
 			return ctx.Err()
 		default:

@@ -27,40 +27,44 @@ func TestShouldReverseItemsInPlace(t *testing.T) {
 	assert.Equal(t, original[0], items[2])
 }
 
-func TestShouldSortItemsAscending(t *testing.T) {
-	// Arrange
-	items := []*Item{
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("c")), Value: []byte("3")},
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("a")), Value: []byte("1")},
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("b")), Value: []byte("2")},
+func TestShouldSortItemsByDirection(t *testing.T) {
+	tests := []struct {
+		name      string
+		direction SortDirection
+		input     []*Item
+		want      [][]byte
+	}{
+		{
+			name:      "ascending",
+			direction: Ascending,
+			input: []*Item{
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("c")), Value: []byte("3")},
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("a")), Value: []byte("1")},
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("b")), Value: []byte("2")},
+			},
+			want: [][]byte{[]byte("1"), []byte("2"), []byte("3")},
+		},
+		{
+			name:      "descending",
+			direction: Descending,
+			input: []*Item{
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("a")), Value: []byte("1")},
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("c")), Value: []byte("3")},
+				{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("b")), Value: []byte("2")},
+			},
+			want: [][]byte{[]byte("3"), []byte("2"), []byte("1")},
+		},
 	}
-
-	// Act
-	SortItems(items, Ascending)
-
-	// Assert
-	assert.Len(t, items, 3)
-	assert.Equal(t, []byte("1"), items[0].Value)
-	assert.Equal(t, []byte("2"), items[1].Value)
-	assert.Equal(t, []byte("3"), items[2].Value)
-}
-
-func TestShouldSortItemsDescending(t *testing.T) {
-	// Arrange
-	items := []*Item{
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("a")), Value: []byte("1")},
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("c")), Value: []byte("3")},
-		{PK: lexkey.NewPrimaryKey(lexkey.Encode("p"), lexkey.Encode("b")), Value: []byte("2")},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := append([]*Item(nil), tt.input...)
+			SortItems(items, tt.direction)
+			assert.Len(t, items, 3)
+			for i, w := range tt.want {
+				assert.Equal(t, w, items[i].Value)
+			}
+		})
 	}
-
-	// Act
-	SortItems(items, Descending)
-
-	// Assert
-	assert.Len(t, items, 3)
-	assert.Equal(t, []byte("3"), items[0].Value)
-	assert.Equal(t, []byte("2"), items[1].Value)
-	assert.Equal(t, []byte("1"), items[2].Value)
 }
 
 func TestShouldSortItemsByPartitionKeyFirst(t *testing.T) {

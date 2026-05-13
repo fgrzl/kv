@@ -320,6 +320,44 @@ type fieldEntry struct {
 // Key is field name, value is list of tokens.
 type tokenRegistry map[string][]string
 
+func (o *overlay) appendRemovedTokenPostings(batchesByPartition map[string][]*kv.BatchItem, entityID, field, token string) {
+	firstLetter := partitionKeyForToken(token)
+	valuePartKey := o.valuePartition(firstLetter)
+	valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(token, entityID, field))
+	batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
+		Op: kv.Delete,
+		PK: valuePK,
+	})
+	fieldPartKey := o.fieldPartition(field, firstLetter)
+	fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(token, entityID))
+	batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
+		Op: kv.Delete,
+		PK: fieldPK,
+	})
+}
+
+func (o *overlay) appendAddedTokenPostings(batchesByPartition map[string][]*kv.BatchItem, entityID, field, token string) {
+	firstLetter := partitionKeyForToken(token)
+	valPost := posting{EntityID: entityID, Field: field}
+	valBytes := encodePosting(valPost)
+	valuePartKey := o.valuePartition(firstLetter)
+	valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(token, entityID, field))
+	batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
+		Op:    kv.Put,
+		PK:    valuePK,
+		Value: valBytes,
+	})
+	fieldPost := posting{EntityID: entityID, Field: field}
+	fieldBytes := encodePosting(fieldPost)
+	fieldPartKey := o.fieldPartition(field, firstLetter)
+	fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(token, entityID))
+	batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
+		Op:    kv.Put,
+		PK:    fieldPK,
+		Value: fieldBytes,
+	})
+}
+
 // Index indexes or updates an entity's searchable attributes and payload.
 // It performs a diff-based update to avoid leaking stale postings.
 func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
@@ -391,60 +429,14 @@ func (o *overlay) Index(ctx context.Context, e SearchEntity) error {
 	// 1) Delete stale postings for removed tokens
 	for field, tokens := range removedTokens {
 		for _, tok := range tokens {
-			firstLetter := partitionKeyForToken(tok)
-
-			// Remove from value index
-			valuePartKey := o.valuePartition(firstLetter)
-			valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
-			batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
-				Op: kv.Delete,
-				PK: valuePK,
-			})
-
-			// Remove from field+value index
-			fieldPartKey := o.fieldPartition(field, firstLetter)
-			fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
-			batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
-				Op: kv.Delete,
-				PK: fieldPK,
-			})
+			o.appendRemovedTokenPostings(batchesByPartition, e.ID, field, tok)
 		}
 	}
 
 	// 2) Add new postings for added tokens
 	for field, tokens := range addedTokens {
 		for _, tok := range tokens {
-			firstLetter := partitionKeyForToken(tok)
-
-			// value index: search across all fields
-			valPost := posting{
-				EntityID: e.ID,
-				Field:    field,
-			}
-			valBytes := encodePosting(valPost)
-
-			valuePartKey := o.valuePartition(firstLetter)
-			valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
-			batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
-				Op:    kv.Put,
-				PK:    valuePK,
-				Value: valBytes,
-			})
-
-			// field+value index: search within specific field
-			fieldPost := posting{
-				EntityID: e.ID,
-				Field:    field,
-			}
-			fieldBytes := encodePosting(fieldPost)
-
-			fieldPartKey := o.fieldPartition(field, firstLetter)
-			fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
-			batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
-				Op:    kv.Put,
-				PK:    fieldPK,
-				Value: fieldBytes,
-			})
+			o.appendAddedTokenPostings(batchesByPartition, e.ID, field, tok)
 		}
 	}
 
@@ -618,60 +610,14 @@ func (o *overlay) BatchIndex(ctx context.Context, entities []SearchEntity) error
 		// Delete stale postings for removed tokens
 		for field, tokens := range removedTokens {
 			for _, tok := range tokens {
-				firstLetter := partitionKeyForToken(tok)
-
-				// Remove from value index
-				valuePartKey := o.valuePartition(firstLetter)
-				valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
-				batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
-					Op: kv.Delete,
-					PK: valuePK,
-				})
-
-				// Remove from field+value index
-				fieldPartKey := o.fieldPartition(field, firstLetter)
-				fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
-				batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
-					Op: kv.Delete,
-					PK: fieldPK,
-				})
+				o.appendRemovedTokenPostings(batchesByPartition, e.ID, field, tok)
 			}
 		}
 
 		// Add new postings for added tokens
 		for field, tokens := range addedTokens {
 			for _, tok := range tokens {
-				firstLetter := partitionKeyForToken(tok)
-
-				// value index: search across all fields
-				valPost := posting{
-					EntityID: e.ID,
-					Field:    field,
-				}
-				valBytes := encodePosting(valPost)
-
-				valuePartKey := o.valuePartition(firstLetter)
-				valuePK := lexkey.NewPrimaryKey(valuePartKey, lexkey.Encode(tok, e.ID, field))
-				batchesByPartition[string(valuePartKey)] = append(batchesByPartition[string(valuePartKey)], &kv.BatchItem{
-					Op:    kv.Put,
-					PK:    valuePK,
-					Value: valBytes,
-				})
-
-				// field+value index: search within specific field
-				fieldPost := posting{
-					EntityID: e.ID,
-					Field:    field,
-				}
-				fieldBytes := encodePosting(fieldPost)
-
-				fieldPartKey := o.fieldPartition(field, firstLetter)
-				fieldPK := lexkey.NewPrimaryKey(fieldPartKey, lexkey.Encode(tok, e.ID))
-				batchesByPartition[string(fieldPartKey)] = append(batchesByPartition[string(fieldPartKey)], &kv.BatchItem{
-					Op:    kv.Put,
-					PK:    fieldPK,
-					Value: fieldBytes,
-				})
+				o.appendAddedTokenPostings(batchesByPartition, e.ID, field, tok)
 			}
 		}
 
@@ -1266,12 +1212,6 @@ func (o *overlay) searchValueIndex(
 		return err
 	}
 
-	// Phase 2c optimization: Pre-allocate expected capacity to reduce map growth
-	estimatedEntityCount := len(items) / 3 // Heuristic: average 3 postings per entity
-	if estimatedEntityCount < 10 {
-		estimatedEntityCount = 10
-	}
-
 	for _, it := range items {
 		p, err := decodePosting(it.Value)
 		if err != nil {
@@ -1329,7 +1269,7 @@ func (o *overlay) searchFieldIndexes(
 
 	// Launch a goroutine for each field query
 	for _, field := range fieldList {
-		// Check if context already cancelled before launching goroutines
+		// Check if context already canceled before launching goroutines
 		select {
 		case <-ctx.Done():
 			wg.Wait() // Wait for any already-launched goroutines
