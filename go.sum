@@ -37,8 +37,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/fgrzl/azkit v0.1.1 h1:niOVIkGxMK0KI3htaqkrr2FPZYxMCh5p/gtgrldpZn0=
 github.com/fgrzl/azkit v0.1.1/go.mod h1:wp4ERu9o0swLR03+CwtLqoZOHKoJgkbH75Q7loDyS48=
-github.com/fgrzl/enumerators v1.0.0 h1:gpdX86ZaK95EogTICr/3lFrC57BdMeKjd1wnmM1NSNQ=
-github.com/fgrzl/enumerators v1.0.0/go.mod h1:feeP9+rknaUYQ8TQwycW1lLX9JdOrWRgr22pu1j5lP4=
+github.com/fgrzl/enumerators v1.0.1 h1:wdpTvSkE/p7d3KDyb/SwNZq0m4lDL1uMD8krm+89MHQ=
+github.com/fgrzl/enumerators v1.0.1/go.mod h1:dQ9CmYdpN4NYvjUKRRgb0aJwTbFxkx3zsEH54iQG/Sw=
 github.com/fgrzl/json v1.0.0 h1:ZCTSbZq3077eP/grt+H71TFoI/Ac8TMSgo0nI/gXNFE=
 github.com/fgrzl/json v1.0.0/go.mod h1:8ZdkBL2YZJ2w96e9GHs70TG7omuJLPVclgj/uQSTgq8=
 github.com/fgrzl/lexkey v0.1.1 h1:C7H6f6Chpkcf9SYxmMqxs4OYYyKEZ2w/YbAXSIvCBd8=
