@@ -5,7 +5,7 @@
 
 A simple and flexible **key-value store abstraction** for Go that provides a unified interface for multiple backend storage systems. This library supports CRUD operations, batch writes, range queries, and efficient enumeration across different storage backends.
 
-The KV interface allows you to seamlessly switch between storage backends including **Azure Tables**, **Pebble DB**, **Redis**, and **Merkle Trees** without changing your application code.
+The KV interface allows you to switch between storage backends (**Azure Tables**, **Pebble**, **Redis**) without changing application code. **Overlays** (graph, merkle, timeseries, search) build on top of any `KV` implementation.
 
 **Documentation:** [docs/](docs/README.md) — structured guides (overview, getting started, observability, overlays). This README remains the full API reference.
 
@@ -17,19 +17,20 @@ The KV interface allows you to seamlessly switch between storage backends includ
 
 The library follows an interface-based design pattern with a core `KV` interface that abstracts common key-value operations. **The interface is the lowest common denominator of all supported backends:** only behavior that every backend can provide is part of the contract. Callers should not rely on backend-specific guarantees (e.g. stronger atomicity, ordering, or performance). Individual backends may implement operations more efficiently, but portable code must assume only what the interface guarantees.
 
-**Supported Backends:**
+**Storage backends:**
 
-- **Azure Tables** - Cloud-native NoSQL storage
-- **Pebble** - High-performance embedded key-value store (RocksDB successor)
-- **Redis** - In-memory data structure store
-- **Merkle Trees** - Cryptographically verifiable data structures
+- **Azure Tables** — cloud or emulator (fazure)
+- **Pebble** — embedded LSM store
+- **Redis** — remote key-value store
+
+**Overlays** (same `KV` interface underneath): graph, merkle, timeseries, search — see [docs/overlays.md](docs/overlays.md).
 
 ---
 
 ## Features
 
 - **CRUD Operations** — `Get`, `Put`, `Insert`, `Remove` with full type safety
-- **Batch Operations** — Efficient bulk writes with deduplication support
+- **Batch Operations** — Efficient bulk writes via `Batch` and `BatchChunks`
 - **Advanced Queries** — Range queries, prefix searches, and custom operators
 - **Query Operators** — `Equal`, `GreaterThan`, `Between`, `StartsWith`, and more
 - **Enumeration** — Memory-efficient iteration over large datasets
@@ -308,17 +309,19 @@ items, err := store.Query(context.Background(), queryArgs, kv.Ascending)
 
 ```go
 enumerator := store.Enumerate(context.Background(), queryArgs)
-defer enumerator.Close()
+defer enumerator.Dispose()
 
-for enumerator.Next() {
-    item := enumerator.Current()
-    // Process item
+for enumerator.MoveNext() {
+    item, err := enumerator.Current()
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Printf("Key: %s, Value: %s\n",
         string(item.PK.RowKey), string(item.Value))
 }
 
-if enumerator.Error() != nil {
-    log.Fatal(enumerator.Error())
+if err := enumerator.Err(); err != nil {
+    log.Fatal(err)
 }
 ```
 

@@ -28,7 +28,7 @@ The interface is the **lowest common denominator** of all backends. Portable cod
 ## Features
 
 - CRUD: `Get`, `Put`, `Insert`, `Remove`
-- `Batch` with deduplication options
+- `Batch` and `BatchChunks` for bulk writes
 - Range and prefix queries via `lexkey` primary keys
 - Optional value compression (framed, integrity-checked)
 - `NewInstrumentedKV` for OpenTelemetry

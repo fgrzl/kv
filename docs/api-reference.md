@@ -7,7 +7,7 @@ The `kv.KV` interface is the portable contract. Backends may optimize internally
 ```go
 type KV interface {
     Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
-    GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
+    GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]BatchGetResult, error)
     Insert(ctx context.Context, item *Item) error
     Put(ctx context.Context, item *Item) error
     Remove(ctx context.Context, pk lexkey.PrimaryKey) error
@@ -19,7 +19,14 @@ type KV interface {
     BatchChunks(ctx context.Context, items enumerators.Enumerator[*BatchItem], chunkSize int) error
     Close() error
 }
+
+type BatchGetResult struct {
+    Item  *Item
+    Found bool
+}
 ```
+
+`GetBatch` returns one result per requested key, in order, with `Found` indicating presence.
 
 ## Query operators
 
@@ -49,7 +56,9 @@ type BatchItem struct {
 
 ## Instrumentation
 
-Wrap any implementation with `NewInstrumentedKV` for OpenTelemetry. See [Observability](observability.md).
+Wrap any implementation with `NewInstrumentedKV(store KV, storeLabel string)` for OpenTelemetry on the **wrapper and overlays** — storage backends are not individually instrumented unless wrapped.
+
+See [Observability](observability.md).
 
 ## Package layout
 

@@ -12,11 +12,12 @@ Configure exporters per [OpenTelemetry Go documentation](https://opentelemetry.i
 
 ## Tracing
 
-Spans cover:
+Spans cover (via `NewInstrumentedKV` and overlay packages):
 
-- Core: `Get`, `Put`, `Insert`, `Remove`, `Query`, `Batch`
+- Core: `Get`, `Put`, `Insert`, `Remove`, `Query`, `Batch`, `GetBatch`, etc.
 - Overlays: graph BFS, Merkle builds, timeseries range queries
-- Backends: backend-specific child spans
+
+Raw Pebble/Redis/Azure store implementations do not emit their own spans unless you wrap them with `NewInstrumentedKV`.
 
 Common attributes: `store`, `operation`, `partition_key`, `row_key`, `batch_size`, `result`.
 

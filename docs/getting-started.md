@@ -47,7 +47,7 @@ import (
 cred, _ := credentials.NewSharedKeyCredential(accountName, accountKey)
 store, _ := azure.NewAzureStore(
     azure.WithTable("mytable"),
-    azure.WithEndpoint(endpoint),
+    azure.WithEndpoint("http://127.0.0.1:10002/devstoreaccount1"), // fazure / Azurite
     azure.WithSharedKey(cred),
 )
 ```
