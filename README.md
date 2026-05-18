@@ -7,6 +7,8 @@ A simple and flexible **key-value store abstraction** for Go that provides a uni
 
 The KV interface allows you to seamlessly switch between storage backends including **Azure Tables**, **Pebble DB**, **Redis**, and **Merkle Trees** without changing your application code.
 
+**Documentation:** [docs/](docs/README.md) — structured guides (overview, getting started, observability, overlays). This README remains the full API reference.
+
 **Contents:** [Architecture](#architecture) · [Features](#features) · [Installation](#installation) · [Quick Start](#quick-start) · [Development Setup](#development-setup) · [API Reference](#api-reference) · [Contributing](#contributing) · [License](#license) · [Related Projects](#related-projects) · [Support](#support)
 
 ---
@@ -397,56 +399,13 @@ go test ./pkg/storage/azure -v
 
 ## API Reference
 
-### Core Interface
-
-The `kv.KV` interface provides the following methods:
-
-```go
-type KV interface {
-    Get(ctx context.Context, pk lexkey.PrimaryKey) (*Item, error)
-    GetBatch(ctx context.Context, keys ...lexkey.PrimaryKey) ([]*Item, error)
-    Insert(ctx context.Context, item *Item) error
-    Put(ctx context.Context, item *Item) error
-    Remove(ctx context.Context, pk lexkey.PrimaryKey) error
-    RemoveBatch(ctx context.Context, keys ...lexkey.PrimaryKey) error
-    RemoveRange(ctx context.Context, rangeKey lexkey.RangeKey) error
-    Query(ctx context.Context, queryArgs QueryArgs, sort SortDirection) ([]*Item, error)
-    Enumerate(ctx context.Context, queryArgs QueryArgs) enumerators.Enumerator[*Item]
-    Batch(ctx context.Context, items []*BatchItem) error
-    BatchChunks(ctx context.Context, items enumerators.Enumerator[*BatchItem], chunkSize int) error
-    Close() error
-}
-```
-
-### Query Operators
-
-- `Scan` - Retrieve all items in range
-- `Equal` - Exact match
-- `GreaterThan` / `GreaterThanOrEqual` - Range queries
-- `LessThan` / `LessThanOrEqual` - Range queries
-- `Between` - Range between two keys
-- `StartsWith` - Prefix matching
-
-### Data Types
-
-```go
-type Item struct {
-    PK    lexkey.PrimaryKey  // Composite key (partition + row)
-    Value []byte             // Stored value
-}
-
-type BatchItem struct {
-    Op    BatchOp            // Put or Delete
-    PK    lexkey.PrimaryKey
-    Value []byte
-}
-```
+See **[docs/api-reference.md](docs/api-reference.md)** for the `KV` interface, query operators, and package layout.
 
 ---
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, code standards, and how to run tests.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Documentation: [docs/](docs/README.md).
 
 ---
 
