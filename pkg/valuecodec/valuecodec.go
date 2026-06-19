@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"math"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -199,24 +200,48 @@ func (z *Zstd) Name() string {
 	return "zstd"
 }
 
+// The zstd encoder and decoder are process-lived singletons shared across all
+// Zstd values. Each carries multi-MB window/hash tables, so constructing one
+// per call dominates heap allocation; (*Encoder).EncodeAll and
+// (*Decoder).DecodeAll are safe for concurrent use, so a single shared instance
+// is the documented reuse pattern. They are lazily built once and must never be
+// Closed: Close tears down the internal worker pool and breaks reuse.
+var (
+	zstdEncoderOnce sync.Once
+	zstdEncoder     *zstd.Encoder
+	zstdEncoderErr  error
+
+	zstdDecoderOnce sync.Once
+	zstdDecoder     *zstd.Decoder
+	zstdDecoderErr  error
+)
+
+func sharedZstdEncoder() (*zstd.Encoder, error) {
+	zstdEncoderOnce.Do(func() {
+		zstdEncoder, zstdEncoderErr = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	})
+	return zstdEncoder, zstdEncoderErr
+}
+
+func sharedZstdDecoder() (*zstd.Decoder, error) {
+	zstdDecoderOnce.Do(func() {
+		zstdDecoder, zstdDecoderErr = zstd.NewReader(nil)
+	})
+	return zstdDecoder, zstdDecoderErr
+}
+
 func (z *Zstd) Compress(src []byte) ([]byte, error) {
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	encoder, err := sharedZstdEncoder()
 	if err != nil {
 		return nil, err
 	}
-	encoded := encoder.EncodeAll(src, nil)
-	if closeErr := encoder.Close(); closeErr != nil {
-		return nil, fmt.Errorf("close encoder: %w", closeErr)
-	}
-	return encoded, nil
+	return encoder.EncodeAll(src, nil), nil
 }
 
 func (z *Zstd) Decompress(src []byte) ([]byte, error) {
-	decoder, err := zstd.NewReader(nil)
+	decoder, err := sharedZstdDecoder()
 	if err != nil {
 		return nil, err
 	}
-	defer decoder.Close()
-
 	return decoder.DecodeAll(src, nil)
 }
