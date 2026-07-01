@@ -3,7 +3,7 @@ module github.com/fgrzl/kv
 go 1.25.6
 
 require (
-	github.com/cockroachdb/pebble/v2 v2.1.5
+	github.com/cockroachdb/pebble/v2 v2.1.6
 	github.com/fgrzl/azkit v0.1.2
 	github.com/fgrzl/enumerators v1.0.1
 	github.com/fgrzl/json v1.0.2
